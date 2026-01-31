@@ -1,8 +1,8 @@
-# Stone-Haven County Asylum User Checker
+# Silverpine Research Labs User Checker
 
-**https://shca-user-checker.com/**
+**DOMAIN COMING SOON**
 
-The **Stone-Haven County Asylum User Checker** is a browser-based administrative tool designed to streamline background checks and user lookups for SHCA MR+, Moderation, and other authorized staff.  
+The **Silverpine Research Labs User Checker** is a browser-based administrative tool designed to streamline background checks and user lookups for SHCA MR+, Moderation, and other authorized staff.  
 It aggregates information from **public Roblox APIs** and **public SHCA department databases**, presenting everything in a single fast and easy-to-read interface.
 
 This project is **source-available** but **not open-source**.  
@@ -52,13 +52,13 @@ Please read the license before using or sharing this code.
 ## Current Development Status
 
 - **Open Alpha**  
-The SHCA User Checker is currently live and hosted as a website.
+The SRL User Checker is currently live and hosted as a website.
 Functionality may change frequently, and some features are still experimental or flagged as “coming soon.”
 
 - **Beta Plans**  
   The beta release will introduce:
   - Badge lookup  
-  - Department database searching  (partly done)
+  - Department database searching  
   - Additional profile metadata  
 
 ---
@@ -74,7 +74,7 @@ Contributions, suggestions, and improvements are welcome **via Issues**.
 For permissions, inquiries, or official collaboration, contact:
 
 **mm6683 / subsmicrofoongames**  
-Discord: *mm6683*  https://discord.com/users/(534430434709209120)
+Discord: *mm6683*  https://discord.com/users/534430434709209120
 Roblox: https://www.roblox.com/users/701515298/profile
 
 ---
