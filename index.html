@@ -2,18 +2,18 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>SHCA User Checker</title>
-    <meta name="description" content="A web application for retrieving detailed Roblox user information from public data sources regarding Stone-Haven County Asylum.">
-    <meta property="og:title" content="SHCA User Checker">
-    <meta property="og:description" content="A web application for retrieving detailed Roblox user information from public data sources regarding Stone-Haven County Asylum.">
+    <title>SRL User Checker</title>
+    <meta name="description" content="A web application for retrieving detailed Roblox user information from public data sources regarding Silverpine Research Labs.">
+    <meta property="og:title" content="SRL User Checker">
+    <meta property="og:description" content="A web application for retrieving detailed Roblox user information from public data sources regarding Silverpine Research Labs.">
     <meta property="og:type" content="website">
-    <meta property="og:image" id="og-image" content="https://raw.githubusercontent.com/mm6683/SHCA-User-Checker/refs/heads/main/public/logo.png">
+    <meta property="og:image" id="og-image" content="https://raw.githubusercontent.com/mm6683/SRL-User-Checker/refs/heads/main/public/logo.png">
     <meta property="og:image:width" content="150">
     <meta property="og:image:height" content="150">
     <meta name="twitter:card" content="summary">
-    <meta name="twitter:title" content="SHCA User Checker">
-    <meta name="twitter:description" content="A web application for retrieving detailed Roblox user information from public data sources regarding Stone-Haven County Asylum.">
-    <meta name="twitter:image" id="twitter-image" content="https://raw.githubusercontent.com/mm6683/SHCA-User-Checker/refs/heads/main/public/logo.png">
+    <meta name="twitter:title" content="SRL User Checker">
+    <meta name="twitter:description" content="A web application for retrieving detailed Roblox user information from public data sources regarding Silverpine Research Labs.">
+    <meta name="twitter:image" id="twitter-image" content="https://raw.githubusercontent.com/mm6683/SRL-User-Checker/refs/heads/main/public/logo.png">
     <link
         id="favicon"
         rel="icon"
@@ -117,7 +117,7 @@
 
 </head>
 <body>
-    <h1>Stone-Haven County Asylum User Checker</h1>
+    <h1>Silverpine Research Labs User Checker</h1>
     <div class="card">
         <input type="text" id="userIdInput" placeholder="Enter Roblox Username or User ID">
         <button onclick="fetchUserData()">Check</button>
@@ -126,7 +126,7 @@
 
     <script>
         const ROBLOX_CDN_HOST = "tr.rbxcdn.com";
-        const HOME_META_IMAGE = "https://raw.githubusercontent.com/mm6683/SHCA-User-Checker/refs/heads/main/public/logo.png";
+        const HOME_META_IMAGE = "https://raw.githubusercontent.com/mm6683/SRL-User-Checker/refs/heads/main/public/logo.png";
 
         function buildProxiedCdnUrl(url) {
             try {
@@ -144,7 +144,7 @@
 
         async function setFavicon() {
             try {
-                const groupLogoRes = await fetch(`/proxy/thumbnails/v1/groups/icons?groupIds=10275842&size=150x150&format=Png&isCircular=false`);
+                const groupLogoRes = await fetch(`/proxy/thumbnails/v1/groups/icons?groupIds=564810012&size=150x150&format=Png&isCircular=false`);
                 const logoData = await groupLogoRes.json();
                 const logoUrl = buildProxiedCdnUrl(logoData.data[0]?.imageUrl);
 
@@ -394,16 +394,13 @@
                 }
 
                 const targetGroups = [
-                    { id: 11882330, name: "Stone-Haven County Asylum" },
-                    { id: 9618085, name: "in the <strong>Stone-Haven Moderation Department</strong>" },
-                    { id: 35242410, name: "part of the <strong>Stone-Haven Departmental Judicial Divisions</strong>" },
-                    { id: 8905914, name: "in the <strong>Stone-Haven Management Protection Team</strong>" },
-                    { id: 5819828, name: "<strong>Stone-Haven Orderly Staff</strong>" },
-                    { id: 36063205, name: "part of the <strong>Stone-Haven Orderly FSD</strong>" },
-                    { id: 5819663, name: "<strong>Stone-Haven Medical Staff</strong>" },
-                    { id: 8959084, name: "in the <strong>Stone-Haven Department of Psychiatry</strong>" },
-                    { id: 14952106, name: "in the <strong>Stone-Haven Community Relations Department</strong>" },
-                    { id: 15505394, name: "in the <strong>Stone-Haven Maintenance Department</strong>" }
+                    { id: 621506828, name: "Silverpine Research Labs" },
+                    { id: 564810012, name: "in the <strong>Silverpine Ethics Department</strong>" },
+                    { id: 815357818, name: "part of <strong>Silverpine Quality Assurance & Development</strong>" },
+                    { id: 433164202, name: "in the <strong>Silverpine DPD Department</strong>" },
+                    { id: 294546230, name: "in the <strong>Silverpine Security Department</strong>" },
+                    { id: 403269953, name: "in the <strong>Silverpine Community Outreach Department</strong>" },
+                    { id: 99598765, name: "in the <strong>Silverpine Medical Department</strong>" },
                 ];
 
                 const groupIds = targetGroups.map(g => g.id);
@@ -466,9 +463,9 @@
 
                 const asylum = groupData.find(g => g.group.id === targetGroups[0].id);
                 if (asylum) {
-                    html += `<div class="group-entry"><img src="${logos[11882330]}"><div>✅ User <strong>is</strong> part of the SHCA Staff Teams community.<br><strong>Rank:</strong> ${asylum.role.name}</div></div>`;
+                    html += `<div class="group-entry"><img src="${logos[621506828]}"><div>✅ User <strong>is</strong> part of the Silverpine Research Labs community.<br><strong>Rank:</strong> ${asylum.role.name}</div></div>`;
                 } else {
-                    html += `<div class="group-entry"><img src="${logos[11882330]}"><div>❌ User <strong>isn't</strong> part of the SHCA Staff Teams community.</div></div>`;
+                    html += `<div class="group-entry"><img src="${logos[621506828]}"><div>❌ User <strong>isn't</strong> part of the Silverpine Research Labs community.</div></div>`;
                 }
 
                 html += `<div class="divider"></div>`;
@@ -683,7 +680,7 @@
                 ]
             };
 
-            let description = `SHCA User Checker - User | ${userId}`;
+            let description = `SRL User Checker - User | ${userId}`;
 
             try {
                 const response = await fetch(`https://users.roblox.com/v1/users/${userId}`);
@@ -692,7 +689,7 @@
                     const user = await response.json();
                     const username = user.name || user.displayName;
                     if (username) {
-                        description = `SHCA User Checker - ${username} | ${userId}`;
+                        description = `SRL User Checker - ${username} | ${userId}`;
                     }
                 }
             } catch (err) {
