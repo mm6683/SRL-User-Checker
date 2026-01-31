@@ -155,7 +155,7 @@ async function serveUserSharePage(request, env, userId) {
     return baseResponse;
   }
 
-  let description = `SHCA User Checker - User | ${userId}`;
+  let description = `SRL User Checker - User | ${userId}`;
   const rawGroupIconUrl = await getGroupIconUrl(DEFAULT_GROUP_ID);
   const rawImageUrl = rawGroupIconUrl || getFallbackCardImage(request);
   let imageUrl = proxyCdnUrl(rawImageUrl, request);
@@ -167,7 +167,7 @@ async function serveUserSharePage(request, env, userId) {
       const user = await userResponse.json();
       const username = user.name || user.displayName;
       if (username) {
-        description = `SHCA User Checker - ${username} | ${userId}`;
+        description = `SRL User Checker - ${username} | ${userId}`;
       }
     }
   } catch (err) {
