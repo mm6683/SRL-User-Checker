@@ -13,7 +13,7 @@ const TARGETS = {
   cdn: "https://tr.rbxcdn.com",
 };
 
-const DEFAULT_GROUP_ID = 10275842;
+const DEFAULT_GROUP_ID = 564810012;
 const GROUP_ICON_SIZE = "420x420";
 const HEADSHOT_SIZE = "420x420";
 const FALLBACK_CARD_PATH = "/share-fallback.svg";
