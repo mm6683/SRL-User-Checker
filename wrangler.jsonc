@@ -1,5 +1,5 @@
 {
-  "name": "shca-user-checker",
+  "name": "srl-user-checker",
   "main": "worker.js",
   "compatibility_date": "2025-12-06",
   "assets": {
