@@ -26,13 +26,13 @@ Please read the license before using or sharing this code.
   - Account creation date  
   - Badges *(coming soon)*
 
-- **SHCA Staff Teams Integration**  
+- **SRL Staff Teams Integration**  
   Automatically checks:
-  - Whether the user is a member of the **SHCA Staff Teams Community**
+  - Whether the user is a member of the **Silverpine Research Labs Community**
   - All associated departments
   - Ranks within each department
 
-- **Department Database Searching** *(almost done)*  
+- **Department Database Searching** *(soon)*  
   Once Sheets API access is finalized, the tool will search all **public SHCA Department Databases** for matching UserIDs and display results.
   Currently, the blacklists of the current departments are available:
   
