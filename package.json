@@ -1,8 +1,8 @@
 {
-  "name": "shca-user-checker",
+  "name": "SRL-user-checker",
   "version": "1.0.0",
   "private": true,
-  "description": "Static SHCA User Checker for Roblox",
+  "description": "SRL User Checker for Roblox",
   "scripts": {
     "dev": "wrangler dev",
     "build": "echo \"Static site - no build step needed\"",
