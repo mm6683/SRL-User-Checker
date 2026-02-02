@@ -3,7 +3,7 @@
 **DOMAIN COMING SOON**
 
 The **Silverpine Research Labs User Checker** is a browser-based administrative tool designed to streamline background checks and user lookups for SRL MR+, Moderation, and other authorized staff.  
-It aggregates information from **public Roblox APIs** and **public SHCA department databases**, presenting everything in a single fast and easy-to-read interface.
+It aggregates information from **public Roblox APIs** and **public SRL department databases**, presenting everything in a single fast and easy-to-read interface.
 
 This project is **source-available** but **not open-source**.  
 Please read the license before using or sharing this code.
