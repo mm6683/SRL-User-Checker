@@ -2,7 +2,7 @@
 
 **DOMAIN COMING SOON**
 
-The **Silverpine Research Labs User Checker** is a browser-based administrative tool designed to streamline primarily background checks and user lookups for SRL MR+ and Ethics.  
+The **Silverpine Research Labs User Checker** is a browser-based administrative tool designed to streamline background checks and user lookups for primarily SRL MR+ and Ethics.  
 It aggregates information from **public Roblox APIs** and **public SRL department databases**, presenting everything in a single fast and easy-to-read interface.
 
 This project is **source-available** but **not open-source**.  
