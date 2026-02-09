@@ -36,9 +36,9 @@ Please read the license before using or sharing this code.
   Once Sheets API access is finalized, the tool will search all **public SRL Department Databases** for matching UserIDs and display results.
   Currently, the blacklists of the current departments are available:
   
-  ~~Orderly temporary & permanent
+  ~~Orderly temporary & permanent~~
   
-  Psychiatry temporary & permanent~~
+  ~~Psychiatry temporary & permanent~~
 
 - **Streamlined Interface**  
   Designed to replace the in-game profile command with a faster, more detailed, and more efficient alternative.
