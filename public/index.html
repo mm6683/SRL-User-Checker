@@ -16,6 +16,12 @@
     <meta name="twitter:image" id="twitter-image" content="https://raw.githubusercontent.com/mm6683/SRL-User-Checker/refs/heads/main/public/logo.png">
     <link rel="icon" href="/logo.png">
 
+    <!-- Three.js r128 core + loaders for the 3D avatar viewer -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/OBJLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/MTLLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
     <style>
         body {
             background-color: #121212;
@@ -68,10 +74,37 @@
             gap: 20px;
             margin-bottom: 10px;
         }
-        .profile-header img {
-            border-radius: 50%;
-            width: 100px;
-            height: 100px;
+        /* 3D avatar canvas container */
+        .avatar-container {
+            flex-shrink: 0;
+            width: 120px;
+            height: 180px;
+            position: relative;
+            border-radius: 8px;
+            background: #2a2a2a;
+            overflow: hidden;
+        }
+        .avatar-container canvas {
+            display: block;
+        }
+        .avatar-loading {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            color: #aaa;
+            pointer-events: none;
+        }
+        /* 2D fallback image (full-body, portrait) */
+        .avatar-fallback {
+            flex-shrink: 0;
+            width: 120px;
+            height: 180px;
+            object-fit: cover;
+            border-radius: 8px;
+            display: block;
         }
         .divider {
             margin: 20px auto;
@@ -94,23 +127,10 @@
             font-size: 12px;
             color: #aaa;
         }
-
-        .blacklist-section {
-            margin-bottom: 14px;
-        }
-
-        .blacklist-row {
-            display: flex;
-            gap: 20px;
-            flex-wrap: wrap;
-            margin-bottom: 14px;
-        }
-
-        .blacklist-field {
-            min-width: 180px;
-        }
+        .blacklist-section { margin-bottom: 14px; }
+        .blacklist-row { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 14px; }
+        .blacklist-field { min-width: 180px; }
     </style>
-
 </head>
 <body>
     <h1>Silverpine Research Labs User Checker</h1>
@@ -128,41 +148,177 @@
             return `${API_BASE}/${service}${path}${query}`;
         }
 
-        const ROBLOX_CDN_HOST = "tr.rbxcdn.com";
+        // ─── 3D Avatar viewer ─────────────────────────────────────────────────────
+        //
+        // Roblox's /v1/users/avatar-3d endpoint returns a URL pointing to a JSON
+        // blob on a numbered CDN (t0-t7.rbxcdn.com). That blob contains camera
+        // data, an AABB for the avatar, and MD5 hashes for the OBJ mesh, MTL
+        // material, and texture files. Each hash maps to a specific CDN subdomain
+        // via a XOR formula. The existing /proxy/cdn route only covers tr.rbxcdn.com,
+        // so a separate /proxy/rbxcdn/{n}/{hash} route in worker.js handles these.
 
-        function buildProxiedCdnUrl(url) {
+        const AVATAR_W = 120;
+        const AVATAR_H = 180;
+
+        // Compute t0-t7 CDN server for a hash and return a proxied URL.
+        // Formula: https://devforum.roblox.com/t/roblox-cdn-how-do-i-know-which-one-to-use/1274498
+        function hashToCdnUrl(hash) {
+            let i = 31;
+            const len = Math.min(38, hash.length);
+            for (let t = 0; t < len; t++) i ^= hash.charCodeAt(t);
+            return `/proxy/rbxcdn/${i % 8}/${hash}`;
+        }
+
+        // Passed to Three.js loaders so that texture hashes referenced inside the
+        // MTL file are routed to the correct CDN server, not the same one the MTL
+        // file itself came from.
+        function urlModifier(url) {
+            const hash = url.split("?")[0].split("/").pop();
+            if (/^[a-f0-9]{32}$/.test(hash)) return hashToCdnUrl(hash);
+            return url;
+        }
+
+        // Swap the canvas container for a plain 2D full-body PNG when the 3D
+        // thumbnail state is "Pending" or Three.js loaders are unavailable.
+        async function showFallbackAvatar(userId) {
+            const container = document.getElementById("avatar-3d-container");
+            if (!container) return;
+            const img = document.createElement("img");
+            img.className = "avatar-fallback";
+            img.alt = "Avatar";
             try {
-                const parsed = new URL(url);
-                if (parsed.hostname !== ROBLOX_CDN_HOST) {
-                    return url;
+                const res = await fetch(
+                    proxyUrl("thumbnails", "/v1/users/avatar",
+                        `userIds=${userId}&size=150x200&format=Png&isCircular=false`)
+                );
+                const data = await res.json();
+                img.src = data.data?.[0]?.imageUrl || "";
+            } catch { img.src = ""; }
+            container.replaceWith(img);
+        }
+
+        async function initAvatarViewer(userId) {
+            // Bail gracefully if any Three.js dependency failed to load.
+            if (typeof THREE === "undefined" ||
+                typeof THREE.OBJLoader === "undefined" ||
+                typeof THREE.MTLLoader === "undefined") {
+                await showFallbackAvatar(userId);
+                return;
+            }
+
+            const canvas = document.getElementById("avatar-canvas");
+            const loadingEl = document.getElementById("avatar-loading");
+            if (!canvas) return;
+
+            try {
+                // 1. Fetch 3D thumbnail metadata.
+                const thumbData = await fetch(
+                    proxyUrl("thumbnails", "/v1/users/avatar-3d", `userId=${userId}`)
+                ).then(r => r.json());
+
+                if (thumbData.state !== "Completed" || !thumbData.imageUrl) {
+                    await showFallbackAvatar(userId);
+                    return;
                 }
-                return `${window.location.origin}/proxy/cdn${parsed.pathname}${parsed.search}`;
-            } catch {
-                return url;
+
+                // 2. The imageUrl is on a numbered CDN (e.g. https://t4.rbxcdn.com/HASH).
+                //    Extract server + hash and fetch through our proxy.
+                const cdnMatch = thumbData.imageUrl.match(/\/\/t(\d+)\.rbxcdn\.com\/([a-zA-Z0-9]+)/);
+                if (!cdnMatch) { await showFallbackAvatar(userId); return; }
+
+                const modelData = await fetch(
+                    `/proxy/rbxcdn/${cdnMatch[1]}/${cdnMatch[2]}`
+                ).then(r => r.json());
+
+                // 3. Three.js scene setup.
+                const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+                renderer.setSize(AVATAR_W, AVATAR_H);
+                renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+                const scene = new THREE.Scene();
+                scene.background = new THREE.Color(0x2a2a2a);
+
+                const { camera: cam, aabb } = modelData;
+                const cx = (aabb.min.x + aabb.max.x) / 2;
+                const cy = (aabb.min.y + aabb.max.y) / 2;
+                const cz = (aabb.min.z + aabb.max.z) / 2;
+
+                const camera = new THREE.PerspectiveCamera(cam.fov, AVATAR_W / AVATAR_H, 0.1, 500);
+                camera.position.set(cam.position.x, cam.position.y, cam.position.z);
+                camera.lookAt(cx, cy, cz);
+
+                scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+                const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+                dirLight.position.set(5, 10, 7);
+                scene.add(dirLight);
+
+                // 4. OrbitControls: auto-rotates by default, user can drag to inspect.
+                let controls = null;
+                if (typeof THREE.OrbitControls !== "undefined") {
+                    controls = new THREE.OrbitControls(camera, canvas);
+                    controls.target.set(cx, cy, cz);
+                    controls.enablePan = false;
+                    controls.enableZoom = false;
+                    controls.autoRotate = true;
+                    controls.autoRotateSpeed = 2.5;
+                    controls.update();
+                }
+
+                // 5. Load MTL then OBJ. Each file is on a different numbered CDN
+                //    server; urlModifier ensures textures are also routed correctly.
+                const mtlUrl = hashToCdnUrl(modelData.mtl);
+                const objUrl = hashToCdnUrl(modelData.obj);
+
+                const mtlLoader = new THREE.MTLLoader();
+                mtlLoader.manager.setURLModifier(urlModifier);
+
+                mtlLoader.load(mtlUrl, (materials) => {
+                    materials.preload();
+
+                    // Roblox's exports include an alpha map that makes the mesh
+                    // transparent. Disable it so the avatar renders solid.
+                    for (const key in materials.materials) {
+                        materials.materials[key].transparent = false;
+                        materials.materials[key].side = THREE.FrontSide;
+                    }
+
+                    const objLoader = new THREE.OBJLoader();
+                    objLoader.setMaterials(materials);
+                    objLoader.manager.setURLModifier(urlModifier);
+
+                    objLoader.load(objUrl, (object) => {
+                        scene.add(object);
+                        if (loadingEl) loadingEl.style.display = "none";
+
+                        (function animate() {
+                            requestAnimationFrame(animate);
+                            if (controls) controls.update();
+                            else object.rotation.y += 0.01;
+                            renderer.render(scene, camera);
+                        })();
+                    });
+                });
+
+            } catch (err) {
+                console.error("3D avatar failed:", err);
+                await showFallbackAvatar(userId);
             }
         }
+
+        // ─── Roblox helpers ───────────────────────────────────────────────────────
 
         async function getUserIDFromUsername(name) {
             try {
                 const cleanedName = name.replace(/^@/, "").replace(/[()]/g, "").trim();
                 const res = await fetch(proxyUrl("users", "/v1/usernames/users"), {
                     method: "POST",
-                    headers: {
-                        "Content-Type": "application/json"
-                    },
-                    body: JSON.stringify({
-                        usernames: [cleanedName],
-                        excludeBannedUsers: false
-                    })
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ usernames: [cleanedName], excludeBannedUsers: false })
                 });
-
                 if (!res.ok) throw new Error("Invalid response");
-
                 const data = await res.json();
                 const user = data.data?.[0];
-
-                if (!user?.id) throw new Error("User ID not found in lookup response");
-
+                if (!user?.id) throw new Error("User ID not found");
                 return user.id;
             } catch (err) {
                 console.error("Failed to get user ID:", err);
@@ -171,176 +327,113 @@
         }
 
         function clearUsernamePath() {
-            if (window.location.pathname.startsWith("/username/")) {
+            if (window.location.pathname.startsWith("/username/"))
                 window.history.replaceState({}, "", "/");
-            }
+        }
+
+        // ─── Blacklist fetchers ───────────────────────────────────────────────────
+
+        async function fetchBlacklist(sheetId, sheet, columns, userId) {
+            const base = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values`;
+            const key = "AIzaSyCAikFNJygYWQTLyrskY4-KKcbuQJ_o_Hk";
+            const enc = encodeURIComponent;
+
+            const idCol = columns.id;
+            const idRes = await fetch(`${base}/'${enc(sheet)}'!${idCol}:${idCol}?key=${key}`);
+            if (!idRes.ok) return null;
+            const idRows = (await idRes.json()).values || [];
+            const rowIndex = idRows.findIndex(r => r[0]?.toString() === userId.toString());
+            if (rowIndex === -1) return null;
+
+            const detailRes = await fetch(`${base}/'${enc(sheet)}'!${columns.range}?key=${key}`);
+            if (!detailRes.ok) return null;
+            const row = (await detailRes.json()).values?.[rowIndex] || [];
+            return columns.map(row);
         }
 
         async function fetchTemporaryBlacklistEntry(userId) {
-            const columnUrl = "https://sheets.googleapis.com/v4/spreadsheets/1nqYVijw4shUKdLS_xntMbELH4IJ_p_M61MFqE503GSA/values/'Temporary%20Blacklists'!B:B?key=AIzaSyCAikFNJygYWQTLyrskY4-KKcbuQJ_o_Hk";
-            const detailsUrl = "https://sheets.googleapis.com/v4/spreadsheets/1nqYVijw4shUKdLS_xntMbELH4IJ_p_M61MFqE503GSA/values/'Temporary%20Blacklists'!A:F?key=AIzaSyCAikFNJygYWQTLyrskY4-KKcbuQJ_o_Hk";
-
+            const sid = "1nqYVijw4shUKdLS_xntMbELH4IJ_p_M61MFqE503GSA";
+            const key = "AIzaSyCAikFNJygYWQTLyrskY4-KKcbuQJ_o_Hk";
+            const base = `https://sheets.googleapis.com/v4/spreadsheets/${sid}/values`;
             try {
-                const columnRes = await fetch(columnUrl);
-                if (!columnRes.ok) throw new Error("Failed to fetch blacklist column");
-
-                const columnData = await columnRes.json();
-                const rows = columnData.values || [];
-                const rowIndex = rows.findIndex(row => row[0]?.toString() === userId.toString());
-
-                if (rowIndex === -1) return null;
-
-                const detailsRes = await fetch(detailsUrl);
-                if (!detailsRes.ok) throw new Error("Failed to fetch blacklist details");
-
-                const detailsData = await detailsRes.json();
-                const blacklistRow = detailsData.values?.[rowIndex] || [];
-
-                return {
-                    username: blacklistRow[0] || "",
-                    robloxId: blacklistRow[1] || "",
-                    discordId: blacklistRow[2] || "",
-                    duration: blacklistRow[3] || "",
-                    appealable: blacklistRow[4] || "",
-                    notes: blacklistRow[5] || ""
-                };
-            } catch (err) {
-                console.error("Failed to fetch temporary blacklist:", err);
-                return null;
-            }
+                const colRes = await fetch(`${base}/'Temporary%20Blacklists'!B:B?key=${key}`);
+                if (!colRes.ok) return null;
+                const rows = (await colRes.json()).values || [];
+                const idx = rows.findIndex(r => r[0]?.toString() === userId.toString());
+                if (idx === -1) return null;
+                const detRes = await fetch(`${base}/'Temporary%20Blacklists'!A:F?key=${key}`);
+                if (!detRes.ok) return null;
+                const row = (await detRes.json()).values?.[idx] || [];
+                return { username: row[0]||"", robloxId: row[1]||"", discordId: row[2]||"", duration: row[3]||"", appealable: row[4]||"", notes: row[5]||"" };
+            } catch (err) { console.error(err); return null; }
         }
 
         async function fetchPermanentBlacklistEntry(userId) {
-            const columnUrl = "https://sheets.googleapis.com/v4/spreadsheets/1nqYVijw4shUKdLS_xntMbELH4IJ_p_M61MFqE503GSA/values/'Permanent%20Blacklists'!B:B?key=AIzaSyCAikFNJygYWQTLyrskY4-KKcbuQJ_o_Hk";
-            const detailsUrl = "https://sheets.googleapis.com/v4/spreadsheets/1nqYVijw4shUKdLS_xntMbELH4IJ_p_M61MFqE503GSA/values/'Permanent%20Blacklists'!A:E?key=AIzaSyCAikFNJygYWQTLyrskY4-KKcbuQJ_o_Hk";
-
+            const sid = "1nqYVijw4shUKdLS_xntMbELH4IJ_p_M61MFqE503GSA";
+            const key = "AIzaSyCAikFNJygYWQTLyrskY4-KKcbuQJ_o_Hk";
+            const base = `https://sheets.googleapis.com/v4/spreadsheets/${sid}/values`;
             try {
-                const columnRes = await fetch(columnUrl);
-                if (!columnRes.ok) throw new Error("Failed to fetch permanent blacklist column");
-
-                const columnData = await columnRes.json();
-                const rows = columnData.values || [];
-                const rowIndex = rows.findIndex(row => row[0]?.toString() === userId.toString());
-
-                if (rowIndex === -1) return null;
-
-                const detailsRes = await fetch(detailsUrl);
-                if (!detailsRes.ok) throw new Error("Failed to fetch permanent blacklist details");
-
-                const detailsData = await detailsRes.json();
-                const blacklistRow = detailsData.values?.[rowIndex] || [];
-
-                return {
-                    username: blacklistRow[0] || "",
-                    robloxId: blacklistRow[1] || "",
-                    discordId: blacklistRow[2] || "",
-                    appealable: blacklistRow[3] || "",
-                    notes: blacklistRow[4] || ""
-                };
-            } catch (err) {
-                console.error("Failed to fetch permanent blacklist:", err);
-                return null;
-            }
+                const colRes = await fetch(`${base}/'Permanent%20Blacklists'!B:B?key=${key}`);
+                if (!colRes.ok) return null;
+                const rows = (await colRes.json()).values || [];
+                const idx = rows.findIndex(r => r[0]?.toString() === userId.toString());
+                if (idx === -1) return null;
+                const detRes = await fetch(`${base}/'Permanent%20Blacklists'!A:E?key=${key}`);
+                if (!detRes.ok) return null;
+                const row = (await detRes.json()).values?.[idx] || [];
+                return { username: row[0]||"", robloxId: row[1]||"", discordId: row[2]||"", appealable: row[3]||"", notes: row[4]||"" };
+            } catch (err) { console.error(err); return null; }
         }
 
         async function fetchPsychiatryTemporaryBlacklistEntry(userId) {
-            const columnUrl = "https://sheets.googleapis.com/v4/spreadsheets/1qzrNIy22MUTvHt34Q4o6PvHmR9dR3TYOdWzmR-Q5baM/values/'Temporary%20Blacklists'!C:C?key=AIzaSyCAikFNJygYWQTLyrskY4-KKcbuQJ_o_Hk";
-            const detailsUrl = "https://sheets.googleapis.com/v4/spreadsheets/1qzrNIy22MUTvHt34Q4o6PvHmR9dR3TYOdWzmR-Q5baM/values/'Temporary%20Blacklists'!B:K?key=AIzaSyCAikFNJygYWQTLyrskY4-KKcbuQJ_o_Hk";
-
+            const sid = "1qzrNIy22MUTvHt34Q4o6PvHmR9dR3TYOdWzmR-Q5baM";
+            const key = "AIzaSyCAikFNJygYWQTLyrskY4-KKcbuQJ_o_Hk";
+            const base = `https://sheets.googleapis.com/v4/spreadsheets/${sid}/values`;
             try {
-                const columnRes = await fetch(columnUrl);
-                if (!columnRes.ok) throw new Error("Failed to fetch psychiatry blacklist column");
-
-                const columnData = await columnRes.json();
-                const rows = columnData.values || [];
-                const rowIndex = rows.findIndex(row => row[0]?.toString() === userId.toString());
-
-                if (rowIndex === -1) return null;
-
-                const detailsRes = await fetch(detailsUrl);
-                if (!detailsRes.ok) throw new Error("Failed to fetch psychiatry blacklist details");
-
-                const detailsData = await detailsRes.json();
-                const blacklistRow = detailsData.values?.[rowIndex] || [];
-
-                return {
-                    username: blacklistRow[0] || "",
-                    robloxId: blacklistRow[1] || "",
-                    discordId: blacklistRow[2] || "",
-                    dateLogged: blacklistRow[4] || "",
-                    blacklistLength: blacklistRow[6] || "",
-                    expiresOn: blacklistRow[7] || "",
-                    notes: blacklistRow[9] || ""
-                };
-            } catch (err) {
-                console.error("Failed to fetch psychiatry temporary blacklist:", err);
-                return null;
-            }
+                const colRes = await fetch(`${base}/'Temporary%20Blacklists'!C:C?key=${key}`);
+                if (!colRes.ok) return null;
+                const rows = (await colRes.json()).values || [];
+                const idx = rows.findIndex(r => r[0]?.toString() === userId.toString());
+                if (idx === -1) return null;
+                const detRes = await fetch(`${base}/'Temporary%20Blacklists'!B:K?key=${key}`);
+                if (!detRes.ok) return null;
+                const row = (await detRes.json()).values?.[idx] || [];
+                return { username: row[0]||"", robloxId: row[1]||"", discordId: row[2]||"", dateLogged: row[4]||"", blacklistLength: row[6]||"", expiresOn: row[7]||"", notes: row[9]||"" };
+            } catch (err) { console.error(err); return null; }
         }
 
         async function fetchPsychiatryPermanentBlacklistEntry(userId) {
-            const columnUrl = "https://sheets.googleapis.com/v4/spreadsheets/1qzrNIy22MUTvHt34Q4o6PvHmR9dR3TYOdWzmR-Q5baM/values/'Permanent%20Blacklists'!C:C?key=AIzaSyCAikFNJygYWQTLyrskY4-KKcbuQJ_o_Hk";
-            const detailsUrl = "https://sheets.googleapis.com/v4/spreadsheets/1qzrNIy22MUTvHt34Q4o6PvHmR9dR3TYOdWzmR-Q5baM/values/'Permanent%20Blacklists'!B:K?key=AIzaSyCAikFNJygYWQTLyrskY4-KKcbuQJ_o_Hk";
-
+            const sid = "1qzrNIy22MUTvHt34Q4o6PvHmR9dR3TYOdWzmR-Q5baM";
+            const key = "AIzaSyCAikFNJygYWQTLyrskY4-KKcbuQJ_o_Hk";
+            const base = `https://sheets.googleapis.com/v4/spreadsheets/${sid}/values`;
             try {
-                const columnRes = await fetch(columnUrl);
-                if (!columnRes.ok) throw new Error("Failed to fetch psychiatry permanent blacklist column");
-
-                const columnData = await columnRes.json();
-                const rows = columnData.values || [];
-                const rowIndex = rows.findIndex(row => row[0]?.toString() === userId.toString());
-
-                if (rowIndex === -1) return null;
-
-                const detailsRes = await fetch(detailsUrl);
-                if (!detailsRes.ok) throw new Error("Failed to fetch psychiatry permanent blacklist details");
-
-                const detailsData = await detailsRes.json();
-                const blacklistRow = detailsData.values?.[rowIndex] || [];
-
-                return {
-                    username: blacklistRow[0] || "",
-                    robloxId: blacklistRow[1] || "",
-                    discordId: blacklistRow[2] || "",
-                    dateLogged: blacklistRow[4] || "",
-                    appealable: blacklistRow[6] || "",
-                    whenToAppeal: blacklistRow[7] || "",
-                    notes: blacklistRow[9] || ""
-                };
-            } catch (err) {
-                console.error("Failed to fetch psychiatry permanent blacklist:", err);
-                return null;
-            }
+                const colRes = await fetch(`${base}/'Permanent%20Blacklists'!C:C?key=${key}`);
+                if (!colRes.ok) return null;
+                const rows = (await colRes.json()).values || [];
+                const idx = rows.findIndex(r => r[0]?.toString() === userId.toString());
+                if (idx === -1) return null;
+                const detRes = await fetch(`${base}/'Permanent%20Blacklists'!B:K?key=${key}`);
+                if (!detRes.ok) return null;
+                const row = (await detRes.json()).values?.[idx] || [];
+                return { username: row[0]||"", robloxId: row[1]||"", discordId: row[2]||"", dateLogged: row[4]||"", appealable: row[6]||"", whenToAppeal: row[7]||"", notes: row[9]||"" };
+            } catch (err) { console.error(err); return null; }
         }
+
+        // ─── Main lookup ──────────────────────────────────────────────────────────
 
         async function fetchUserData(initialInput = null) {
             const inputElement = document.getElementById("userIdInput");
+            if (!initialInput) clearUsernamePath();
 
-            if (!initialInput) {
-                clearUsernamePath();
-            }
-
-            let input = (initialInput ?? inputElement.value).trim();
+            let input = (initialInput ?? inputElement.value).trim().replace(/^@/, "").replace(/[()]/g, "").trim();
             const result = document.getElementById("result");
             result.innerHTML = "Loading...";
 
-            input = input.replace(/^@/, "").replace(/[()]/g, "").trim();
-
             const userId = /^\d+$/.test(input) ? input : await getUserIDFromUsername(input);
+            if (!userId) { result.innerHTML = "❌ Failed to find user by username."; return; }
+            if (!initialInput) inputElement.value = input;
 
-            if (!userId) {
-                result.innerHTML = "❌ Failed to find user by username.";
-                return;
-            }
-
-            if (!initialInput) {
-                inputElement.value = input;
-            }
-
-            let isBanned = false;
-            if (typeof window.isbanned !== "undefined") {
-                isBanned = window.isbanned;
-            }
+            let isBanned = typeof window.isbanned !== "undefined" ? window.isbanned : false;
 
             try {
                 const [userRes, groupsRes, friendsRes] = await Promise.all([
@@ -350,29 +443,17 @@
                 ]);
 
                 const user = await userRes.json();
-                const thumbnail = await fetch(
-                    proxyUrl("thumbnails", "/v1/users/avatar-headshot", `userIds=${userId}&size=150x150&format=Png&isCircular=true`)
-                ).then(res => res.json());
-                const avatarEntry = thumbnail.data?.[0];
-                const avatarUrl = (avatarEntry?.imageUrl || `https://www.roblox.com/headshot-thumbnail/image?userId=${userId}&width=150&height=150&format=png`).replace(/^http:\/\//, "https://");
-
                 const groupData = (await groupsRes.json()).data;
                 const friendCount = (await friendsRes.json()).count;
 
                 let usernameHistory = null;
                 try {
-                    const usernameHistoryRes = await fetch(proxyUrl("users", `/v1/users/${userId}/username-history`));
-                    if (usernameHistoryRes.ok) {
-                        usernameHistory = await usernameHistoryRes.json();
-                    } else {
-                        console.warn("Username history unavailable:", usernameHistoryRes.status);
-                    }
-                } catch (historyErr) {
-                    console.warn("Failed to fetch username history:", historyErr);
-                }
+                    const r = await fetch(proxyUrl("users", `/v1/users/${userId}/username-history`));
+                    if (r.ok) usernameHistory = await r.json();
+                } catch { /* optional */ }
 
                 let usernamesHtml = "";
-                if (usernameHistory?.data && usernameHistory.data.length > 0) {
+                if (usernameHistory?.data?.length > 0) {
                     usernamesHtml = `<div class="small"><strong>Previous Usernames:</strong></div>`;
                     usernamesHtml += usernameHistory.data.map(u => `<div class="small"><strong>${u.name}</strong></div>`).join("");
                 } else if (usernameHistory === null) {
@@ -389,18 +470,13 @@
                     { id: 99598765, name: "in the <strong>Silverpine Medical Department</strong>" },
                 ];
 
-                const groupIds = targetGroups.map(g => g.id);
                 const logosRes = await fetch(
-                    proxyUrl("thumbnails", "/v1/groups/icons", `groupIds=${groupIds.join(",")}&size=150x150&format=Png&isCircular=false`)
+                    proxyUrl("thumbnails", "/v1/groups/icons",
+                        `groupIds=${targetGroups.map(g => g.id).join(",")}&size=150x150&format=Png&isCircular=false`)
                 );
                 const logos = (await logosRes.json()).data.reduce((acc, cur) => (acc[cur.targetId] = cur.imageUrl, acc), {});
 
-                const [
-                    temporaryBlacklistEntry,
-                    permanentBlacklistEntry,
-                    psychiatryTemporaryBlacklistEntry,
-                    psychiatryPermanentBlacklistEntry
-                ] = await Promise.all([
+                const [tempBL, permBL, psyTempBL, psyPermBL] = await Promise.all([
                     fetchTemporaryBlacklistEntry(userId),
                     fetchPermanentBlacklistEntry(userId),
                     fetchPsychiatryTemporaryBlacklistEntry(userId),
@@ -409,24 +485,19 @@
 
                 function timeAgo(date) {
                     const seconds = Math.floor((new Date() - new Date(date)) / 1000);
-                    const intervals = [
-                        { name: "year", seconds: 31536000 },
-                        { name: "month", seconds: 2592000 },
-                        { name: "day", seconds: 86400 },
-                        { name: "hour", seconds: 3600 },
-                        { name: "minute", seconds: 60 },
-                        { name: "second", seconds: 1 }
-                    ];
-                    for (const interval of intervals) {
-                        const count = Math.floor(seconds / interval.seconds);
-                        if (count > 0) return `${count} ${interval.name}${count > 1 ? "s" : ""} ago`;
+                    for (const [name, s] of [["year",31536000],["month",2592000],["day",86400],["hour",3600],["minute",60],["second",1]]) {
+                        const c = Math.floor(seconds / s);
+                        if (c > 0) return `${c} ${name}${c > 1 ? "s" : ""} ago`;
                     }
                     return "Just now";
                 }
 
                 let html = `
                     <div class="profile-header">
-                        <img src="${avatarUrl}">
+                        <div class="avatar-container" id="avatar-3d-container">
+                            <canvas id="avatar-canvas"></canvas>
+                            <div class="avatar-loading" id="avatar-loading">Loading 3D…</div>
+                        </div>
                         <div>
                             <strong>${user.displayName}</strong><br>
                             <div>@${user.name}</div>
@@ -441,278 +512,116 @@
                     <div class="divider"></div>
                 `;
 
-                if (isBanned) {
-                    html += `<div class="group-entry"><div style="color: red;">❌ This user is currently banned from Roblox.</div></div>`;
-                }
+                if (isBanned) html += `<div class="group-entry"><div style="color:red;">❌ This user is currently banned from Roblox.</div></div>`;
 
-                const staffCommunityId = targetGroups[0].id;
-                const asylum = groupData.find(g => g.group.id === staffCommunityId);
-                if (asylum) {
-                    html += `<div class="group-entry"><img src="${logos[staffCommunityId]}"><div>✅ User <strong>is</strong> part of the Silverpine Research Labs community.<br><strong>Rank:</strong> ${asylum.role.name}</div></div>`;
-                } else {
-                    html += `<div class="group-entry"><img src="${logos[staffCommunityId]}"><div>❌ User <strong>isn't</strong> part of the Silverpine Research Labs community.</div></div>`;
-                }
+                const staffId = targetGroups[0].id;
+                const inSRL = groupData.find(g => g.group.id === staffId);
+                html += inSRL
+                    ? `<div class="group-entry"><img src="${logos[staffId]}"><div>✅ User <strong>is</strong> part of the Silverpine Research Labs community.<br><strong>Rank:</strong> ${inSRL.role.name}</div></div>`
+                    : `<div class="group-entry"><img src="${logos[staffId]}"><div>❌ User <strong>isn't</strong> part of the Silverpine Research Labs community.</div></div>`;
 
                 html += `<div class="divider"></div>`;
-
                 for (const group of targetGroups.slice(1)) {
                     const member = groupData.find(g => g.group.id === group.id);
-                    if (member) {
-                        html += `<div class="group-entry"><img src="${logos[group.id]}"><div>User is ${group.name} | <strong>${member.role.name}</strong></div></div>`;
-                    }
+                    if (member) html += `<div class="group-entry"><img src="${logos[group.id]}"><div>User is ${group.name} | <strong>${member.role.name}</strong></div></div>`;
                 }
 
-                if (temporaryBlacklistEntry) {
-                    html += `<div class="divider"></div>`;
-                    html += `
-                        <div class="group-entry">
-                            <div><strong>Orderly Temporary Blacklist</strong></div>
-                        </div>
-                        <div style="margin-left: 50px;">
-                            <div class="blacklist-section">
-                                <div><strong>Username:</strong></div>
-                                <div>${temporaryBlacklistEntry.username || "N/A"}</div>
-                            </div>
-                            <div class="blacklist-row">
-                                <div class="blacklist-field">
-                                    <div><strong>Roblox ID:</strong></div>
-                                    <div>${temporaryBlacklistEntry.robloxId || "N/A"}</div>
-                                </div>
-                                <div class="blacklist-field">
-                                    <div><strong>Discord ID:</strong></div>
-                                    <div>${temporaryBlacklistEntry.discordId || "N/A"}</div>
-                                </div>
-                            </div>
-                            <div class="blacklist-row">
-                                <div class="blacklist-field">
-                                    <div><strong>Duration:</strong></div>
-                                    <div>${temporaryBlacklistEntry.duration || "N/A"}</div>
-                                </div>
-                                <div class="blacklist-field">
-                                    <div><strong>Appealable:</strong></div>
-                                    <div>${temporaryBlacklistEntry.appealable || "N/A"}</div>
-                                </div>
-                            </div>
-                            <div class="blacklist-section">
-                                <div><strong>Notes:</strong></div>
-                                <div>${temporaryBlacklistEntry.notes || "N/A"}</div>
-                            </div>
-                        </div>
-                    `;
+                function blSection(title, fields) {
+                    return `<div class="divider"></div>
+                        <div class="group-entry"><div><strong>${title}</strong></div></div>
+                        <div style="margin-left:50px;">${fields}</div>`;
                 }
+                function row2(a, b) { return `<div class="blacklist-row"><div class="blacklist-field">${a}</div><div class="blacklist-field">${b}</div></div>`; }
+                function field(label, val) { return `<div class="blacklist-section"><div><strong>${label}</strong></div><div>${val||"N/A"}</div></div>`; }
 
-                if (permanentBlacklistEntry) {
-                    html += `<div class="divider"></div>`;
-                    html += `
-                        <div class="group-entry">
-                            <div><strong>Orderly Permanent Blacklist</strong></div>
-                        </div>
-                        <div style="margin-left: 50px;">
-                            <div class="blacklist-section">
-                                <div><strong>Username:</strong></div>
-                                <div>${permanentBlacklistEntry.username || "N/A"}</div>
-                            </div>
-                            <div class="blacklist-row">
-                                <div class="blacklist-field">
-                                    <div><strong>Roblox ID:</strong></div>
-                                    <div>${permanentBlacklistEntry.robloxId || "N/A"}</div>
-                                </div>
-                                <div class="blacklist-field">
-                                    <div><strong>Discord ID:</strong></div>
-                                    <div>${permanentBlacklistEntry.discordId || "N/A"}</div>
-                                </div>
-                            </div>
-                            <div class="blacklist-row">
-                                <div class="blacklist-field">
-                                    <div><strong>Appealable:</strong></div>
-                                    <div>${permanentBlacklistEntry.appealable || "N/A"}</div>
-                                </div>
-                            </div>
-                            <div class="blacklist-section">
-                                <div><strong>Notes:</strong></div>
-                                <div>${permanentBlacklistEntry.notes || "N/A"}</div>
-                            </div>
-                        </div>
-                    `;
-                }
+                if (tempBL) html += blSection("Orderly Temporary Blacklist",
+                    field("Username:", tempBL.username) +
+                    row2(field("Roblox ID:", tempBL.robloxId), field("Discord ID:", tempBL.discordId)) +
+                    row2(field("Duration:", tempBL.duration), field("Appealable:", tempBL.appealable)) +
+                    field("Notes:", tempBL.notes));
 
-                if (psychiatryTemporaryBlacklistEntry) {
-                    html += `<div class="divider"></div>`;
-                    html += `
-                        <div class="group-entry">
-                            <div><strong>Psychiatry Temporary Blacklist</strong></div>
-                        </div>
-                        <div style="margin-left: 50px;">
-                            <div class="blacklist-section">
-                                <div><strong>Username:</strong></div>
-                                <div>${psychiatryTemporaryBlacklistEntry.username || "N/A"}</div>
-                            </div>
-                            <div class="blacklist-row">
-                                <div class="blacklist-field">
-                                    <div><strong>Roblox ID:</strong></div>
-                                    <div>${psychiatryTemporaryBlacklistEntry.robloxId || "N/A"}</div>
-                                </div>
-                                <div class="blacklist-field">
-                                    <div><strong>Discord ID:</strong></div>
-                                    <div>${psychiatryTemporaryBlacklistEntry.discordId || "N/A"}</div>
-                                </div>
-                            </div>
-                            <div class="blacklist-section">
-                                <div><strong>Date logged:</strong></div>
-                                <div>${psychiatryTemporaryBlacklistEntry.dateLogged || "N/A"}</div>
-                            </div>
-                            <div class="blacklist-row">
-                                <div class="blacklist-field">
-                                    <div><strong>BL length:</strong></div>
-                                    <div>${psychiatryTemporaryBlacklistEntry.blacklistLength || "N/A"}</div>
-                                </div>
-                                <div class="blacklist-field">
-                                    <div><strong>Expires on:</strong></div>
-                                    <div>${psychiatryTemporaryBlacklistEntry.expiresOn || "N/A"}</div>
-                                </div>
-                            </div>
-                            <div class="blacklist-section">
-                                <div><strong>Additional notes:</strong></div>
-                                <div>${psychiatryTemporaryBlacklistEntry.notes || "N/A"}</div>
-                            </div>
-                        </div>
-                    `;
-                }
+                if (permBL) html += blSection("Orderly Permanent Blacklist",
+                    field("Username:", permBL.username) +
+                    row2(field("Roblox ID:", permBL.robloxId), field("Discord ID:", permBL.discordId)) +
+                    field("Appealable:", permBL.appealable) +
+                    field("Notes:", permBL.notes));
 
-                if (psychiatryPermanentBlacklistEntry) {
-                    html += `<div class="divider"></div>`;
-                    html += `
-                        <div class="group-entry">
-                            <div><strong>Psychiatry Permanent Blacklist</strong></div>
-                        </div>
-                        <div style="margin-left: 50px;">
-                            <div class="blacklist-section">
-                                <div><strong>Username:</strong></div>
-                                <div>${psychiatryPermanentBlacklistEntry.username || "N/A"}</div>
-                            </div>
-                            <div class="blacklist-row">
-                                <div class="blacklist-field">
-                                    <div><strong>Roblox ID:</strong></div>
-                                    <div>${psychiatryPermanentBlacklistEntry.robloxId || "N/A"}</div>
-                                </div>
-                                <div class="blacklist-field">
-                                    <div><strong>Discord ID:</strong></div>
-                                    <div>${psychiatryPermanentBlacklistEntry.discordId || "N/A"}</div>
-                                </div>
-                            </div>
-                            <div class="blacklist-section">
-                                <div><strong>Date logged:</strong></div>
-                                <div>${psychiatryPermanentBlacklistEntry.dateLogged || "N/A"}</div>
-                            </div>
-                            <div class="blacklist-row">
-                                <div class="blacklist-field">
-                                    <div><strong>Appealable:</strong></div>
-                                    <div>${psychiatryPermanentBlacklistEntry.appealable || "N/A"}</div>
-                                </div>
-                                <div class="blacklist-field">
-                                    <div><strong>When to appeal:</strong></div>
-                                    <div>${psychiatryPermanentBlacklistEntry.whenToAppeal || "N/A"}</div>
-                                </div>
-                            </div>
-                            <div class="blacklist-section">
-                                <div><strong>Additional notes:</strong></div>
-                                <div>${psychiatryPermanentBlacklistEntry.notes || "N/A"}</div>
-                            </div>
-                        </div>
-                    `;
-                }
+                if (psyTempBL) html += blSection("Psychiatry Temporary Blacklist",
+                    field("Username:", psyTempBL.username) +
+                    row2(field("Roblox ID:", psyTempBL.robloxId), field("Discord ID:", psyTempBL.discordId)) +
+                    field("Date logged:", psyTempBL.dateLogged) +
+                    row2(field("BL length:", psyTempBL.blacklistLength), field("Expires on:", psyTempBL.expiresOn)) +
+                    field("Additional notes:", psyTempBL.notes));
+
+                if (psyPermBL) html += blSection("Psychiatry Permanent Blacklist",
+                    field("Username:", psyPermBL.username) +
+                    row2(field("Roblox ID:", psyPermBL.robloxId), field("Discord ID:", psyPermBL.discordId)) +
+                    field("Date logged:", psyPermBL.dateLogged) +
+                    row2(field("Appealable:", psyPermBL.appealable), field("When to appeal:", psyPermBL.whenToAppeal)) +
+                    field("Additional notes:", psyPermBL.notes));
 
                 result.innerHTML = html;
 
+                // Init 3D viewer after DOM update (fire-and-forget)
+                initAvatarViewer(userId);
+
                 const targetPath = `/userid/${userId}`;
-                if (window.location.pathname !== targetPath) {
+                if (window.location.pathname !== targetPath)
                     window.history.replaceState({}, "", targetPath);
-                }
+
             } catch (err) {
                 console.error(err);
                 result.innerHTML = "❌ Failed to load data.";
             }
         }
 
-        document.getElementById("userIdInput").addEventListener("keydown", function(event) {
-            if (event.key === "Enter") {
-                fetchUserData();
-            }
+        // ─── Keyboard + initial path ──────────────────────────────────────────────
+
+        document.getElementById("userIdInput").addEventListener("keydown", e => {
+            if (e.key === "Enter") fetchUserData();
         });
 
         async function setShareMetadataForUserPath() {
             const path = window.location.pathname;
             const userIdMatch = path.match(/^\/userid\/(\d+)(?:\/)?$/);
             const usernameMatch = path.match(/^\/username\/(.+)\/?$/);
-
             let userId = userIdMatch?.[1];
-
-            if (!userId && usernameMatch) {
-                const username = decodeURIComponent(usernameMatch[1]);
-                userId = await getUserIDFromUsername(username);
-            }
-
+            if (!userId && usernameMatch) userId = await getUserIDFromUsername(decodeURIComponent(usernameMatch[1]));
             if (!userId) return;
 
-            const selectors = {
-                description: [
-                    'meta[name="description"]',
-                    'meta[property="og:description"]',
-                    'meta[name="twitter:description"]'
-                ],
-                image: [
-                    'meta[property="og:image"]',
-                    'meta[name="twitter:image"]'
-                ]
-            };
-
             let description = `SRL User Checker - User | ${userId}`;
-
             try {
-                const response = await fetch(proxyUrl("users", `/v1/users/${userId}`));
-                if (response.ok) {
-                    const user = await response.json();
-                    const username = user.name || user.displayName;
-                    if (username) description = `SRL User Checker - ${username} | ${userId}`;
+                const r = await fetch(proxyUrl("users", `/v1/users/${userId}`));
+                if (r.ok) {
+                    const u = await r.json();
+                    const name = u.name || u.displayName;
+                    if (name) description = `SRL User Checker - ${name} | ${userId}`;
                 }
-            } catch (err) {
-                console.error("Failed to fetch user details for metadata:", err);
-            }
+            } catch { /* optional */ }
 
-            selectors.description.forEach(selector => {
-                const tag = document.querySelector(selector);
-                if (tag) tag.setAttribute("content", description);
-            });
+            for (const sel of ['meta[name="description"]', 'meta[property="og:description"]', 'meta[name="twitter:description"]'])
+                document.querySelector(sel)?.setAttribute("content", description);
 
             try {
-                const headshotRes = await fetch(
-                    proxyUrl("thumbnails", "/v1/users/avatar-headshot", `userIds=${userId}&size=420x420&format=Png&isCircular=true`)
-                );
-                if (headshotRes.ok) {
-                    const headshotData = await headshotRes.json();
-                    const headshotUrl = headshotData.data?.[0]?.imageUrl;
-                    if (headshotUrl) {
-                        selectors.image.forEach(selector => {
-                            const tag = document.querySelector(selector);
-                            if (tag) tag.setAttribute("content", headshotUrl);
-                        });
+                const r = await fetch(proxyUrl("thumbnails", "/v1/users/avatar-headshot", `userIds=${userId}&size=420x420&format=Png&isCircular=true`));
+                if (r.ok) {
+                    const url = (await r.json()).data?.[0]?.imageUrl;
+                    if (url) {
+                        document.querySelector('meta[property="og:image"]')?.setAttribute("content", url);
+                        document.querySelector('meta[name="twitter:image"]')?.setAttribute("content", url);
                     }
                 }
-            } catch (err) {
-                console.error("Failed to fetch user headshot for metadata:", err);
-            }
+            } catch { /* optional */ }
         }
 
         function handleInitialPath() {
             const path = window.location.pathname;
             const userIdMatch = path.match(/^\/userid\/(\d+)\/?$/);
             if (userIdMatch) {
-                const userId = userIdMatch[1];
-                document.getElementById("userIdInput").value = userId;
-                fetchUserData(userId);
+                document.getElementById("userIdInput").value = userIdMatch[1];
+                fetchUserData(userIdMatch[1]);
                 return;
             }
-
             const usernameMatch = path.match(/^\/username\/(.+)\/?$/);
             if (usernameMatch) {
                 const username = decodeURIComponent(usernameMatch[1]);
