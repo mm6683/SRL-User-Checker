@@ -66,9 +66,19 @@ async function handleProxy(request, env) {
   }
 
   const targetUrl = new URL(`/${rest.join("/")}${url.search}`, TARGETS[service]);
+
+  // Strip headers that cause Roblox to reject server-side requests with 403.
+  // The browser sends Origin/Referer pointing at the worker domain, which
+  // Roblox treats as an invalid origin on stricter endpoints (e.g. avatar-3d).
+  // Cookie is stripped to avoid accidentally forwarding session tokens.
+  const outboundHeaders = new Headers(request.headers);
+  outboundHeaders.delete("origin");
+  outboundHeaders.delete("referer");
+  outboundHeaders.delete("cookie");
+
   const outboundInit = {
     method: request.method,
-    headers: request.headers,
+    headers: outboundHeaders,
     redirect: "follow",
   };
 
