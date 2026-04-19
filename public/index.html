@@ -14,11 +14,7 @@
     <meta name="twitter:title" content="SRL User Checker">
     <meta name="twitter:description" content="A web application for retrieving detailed Roblox user information from public data sources regarding Silverpine Research Labs.">
     <meta name="twitter:image" id="twitter-image" content="https://raw.githubusercontent.com/mm6683/SRL-User-Checker/refs/heads/main/public/logo.png">
-    <link
-        id="favicon"
-        rel="icon"
-        href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%231e1e1e'/%3E%3Ctext x='32' y='42' font-size='32' text-anchor='middle' fill='white' font-family='Arial'%3ESH%3C/text%3E%3C/svg%3E"
-    >
+    <link rel="icon" href="/logo.png">
 
     <style>
         body {
@@ -133,48 +129,16 @@
         }
 
         const ROBLOX_CDN_HOST = "tr.rbxcdn.com";
-        const HOME_META_IMAGE = "https://raw.githubusercontent.com/mm6683/SRL-User-Checker/refs/heads/main/public/logo.png";
 
         function buildProxiedCdnUrl(url) {
             try {
                 const parsed = new URL(url);
-
                 if (parsed.hostname !== ROBLOX_CDN_HOST) {
                     return url;
                 }
-
                 return `${window.location.origin}/proxy/cdn${parsed.pathname}${parsed.search}`;
             } catch {
                 return url;
-            }
-        }
-
-        async function setFavicon() {
-            try {
-                const groupLogoRes = await fetch(
-                    proxyUrl(
-                        "thumbnails",
-                        "/v1/groups/icons",
-                        "groupIds=10275842&size=150x150&format=Png&isCircular=false"
-                    )
-                );
-                const logoData = await groupLogoRes.json();
-                const logoUrl = buildProxiedCdnUrl(logoData.data[0]?.imageUrl);
-
-                if (logoUrl) {
-                    const favicon = document.getElementById("favicon");
-                    favicon.setAttribute("href", logoUrl);
-                    const newLink = favicon.cloneNode(true);
-                    favicon.parentNode.replaceChild(newLink, favicon);
-
-                    const ogImage = document.getElementById("og-image");
-                    if (ogImage) ogImage.setAttribute("content", HOME_META_IMAGE);
-
-                    const twitterImage = document.getElementById("twitter-image");
-                    if (twitterImage) twitterImage.setAttribute("content", HOME_META_IMAGE);
-                }
-            } catch (err) {
-                console.error("Failed to fetch favicon logo:", err);
             }
         }
 
@@ -224,9 +188,7 @@
                 const rows = columnData.values || [];
                 const rowIndex = rows.findIndex(row => row[0]?.toString() === userId.toString());
 
-                if (rowIndex === -1) {
-                    return null;
-                }
+                if (rowIndex === -1) return null;
 
                 const detailsRes = await fetch(detailsUrl);
                 if (!detailsRes.ok) throw new Error("Failed to fetch blacklist details");
@@ -260,9 +222,7 @@
                 const rows = columnData.values || [];
                 const rowIndex = rows.findIndex(row => row[0]?.toString() === userId.toString());
 
-                if (rowIndex === -1) {
-                    return null;
-                }
+                if (rowIndex === -1) return null;
 
                 const detailsRes = await fetch(detailsUrl);
                 if (!detailsRes.ok) throw new Error("Failed to fetch permanent blacklist details");
@@ -295,9 +255,7 @@
                 const rows = columnData.values || [];
                 const rowIndex = rows.findIndex(row => row[0]?.toString() === userId.toString());
 
-                if (rowIndex === -1) {
-                    return null;
-                }
+                if (rowIndex === -1) return null;
 
                 const detailsRes = await fetch(detailsUrl);
                 if (!detailsRes.ok) throw new Error("Failed to fetch psychiatry blacklist details");
@@ -332,9 +290,7 @@
                 const rows = columnData.values || [];
                 const rowIndex = rows.findIndex(row => row[0]?.toString() === userId.toString());
 
-                if (rowIndex === -1) {
-                    return null;
-                }
+                if (rowIndex === -1) return null;
 
                 const detailsRes = await fetch(detailsUrl);
                 if (!detailsRes.ok) throw new Error("Failed to fetch psychiatry permanent blacklist details");
@@ -382,7 +338,6 @@
             }
 
             let isBanned = false;
-
             if (typeof window.isbanned !== "undefined") {
                 isBanned = window.isbanned;
             }
@@ -396,11 +351,7 @@
 
                 const user = await userRes.json();
                 const thumbnail = await fetch(
-                    proxyUrl(
-                        "thumbnails",
-                        "/v1/users/avatar-headshot",
-                        `userIds=${userId}&size=150x150&format=Png&isCircular=true`
-                    )
+                    proxyUrl("thumbnails", "/v1/users/avatar-headshot", `userIds=${userId}&size=150x150&format=Png&isCircular=true`)
                 ).then(res => res.json());
                 const avatarEntry = thumbnail.data?.[0];
                 const avatarUrl = (avatarEntry?.imageUrl || `https://www.roblox.com/headshot-thumbnail/image?userId=${userId}&width=150&height=150&format=png`).replace(/^http:\/\//, "https://");
@@ -410,9 +361,7 @@
 
                 let usernameHistory = null;
                 try {
-                    const usernameHistoryRes = await fetch(
-                        proxyUrl("users", `/v1/users/${userId}/username-history`)
-                    );
+                    const usernameHistoryRes = await fetch(proxyUrl("users", `/v1/users/${userId}/username-history`));
                     if (usernameHistoryRes.ok) {
                         usernameHistory = await usernameHistoryRes.json();
                     } else {
@@ -442,11 +391,7 @@
 
                 const groupIds = targetGroups.map(g => g.id);
                 const logosRes = await fetch(
-                    proxyUrl(
-                        "thumbnails",
-                        "/v1/groups/icons",
-                        `groupIds=${groupIds.join(",")}&size=150x150&format=Png&isCircular=false`
-                    )
+                    proxyUrl("thumbnails", "/v1/groups/icons", `groupIds=${groupIds.join(",")}&size=150x150&format=Png&isCircular=false`)
                 );
                 const logos = (await logosRes.json()).data.reduce((acc, cur) => (acc[cur.targetId] = cur.imageUrl, acc), {});
 
@@ -472,13 +417,9 @@
                         { name: "minute", seconds: 60 },
                         { name: "second", seconds: 1 }
                     ];
-
-                    for (let i = 0; i < intervals.length; i++) {
-                        const interval = intervals[i];
+                    for (const interval of intervals) {
                         const count = Math.floor(seconds / interval.seconds);
-                        if (count > 0) {
-                            return `${count} ${interval.name}${count > 1 ? "s" : ""} ago`;
-                        }
+                        if (count > 0) return `${count} ${interval.name}${count > 1 ? "s" : ""} ago`;
                     }
                     return "Just now";
                 }
@@ -525,8 +466,7 @@
                     html += `<div class="divider"></div>`;
                     html += `
                         <div class="group-entry">
-                            <img src="${logos[5819828] || ""}">
-                            <div><strong>Orderly Temporary Blackist</strong></div>
+                            <div><strong>Orderly Temporary Blacklist</strong></div>
                         </div>
                         <div style="margin-left: 50px;">
                             <div class="blacklist-section">
@@ -565,8 +505,7 @@
                     html += `<div class="divider"></div>`;
                     html += `
                         <div class="group-entry">
-                            <img src="${logos[5819828] || ""}">
-                            <div><strong>Orderly Permanent Blackist</strong></div>
+                            <div><strong>Orderly Permanent Blacklist</strong></div>
                         </div>
                         <div style="margin-left: 50px;">
                             <div class="blacklist-section">
@@ -601,8 +540,7 @@
                     html += `<div class="divider"></div>`;
                     html += `
                         <div class="group-entry">
-                            <img src="${logos[8959084] || ""}">
-                            <div><strong>Psychiatry temporary blacklist</strong></div>
+                            <div><strong>Psychiatry Temporary Blacklist</strong></div>
                         </div>
                         <div style="margin-left: 50px;">
                             <div class="blacklist-section">
@@ -634,7 +572,7 @@
                                 </div>
                             </div>
                             <div class="blacklist-section">
-                                <div><strong>Additional notes</strong></div>
+                                <div><strong>Additional notes:</strong></div>
                                 <div>${psychiatryTemporaryBlacklistEntry.notes || "N/A"}</div>
                             </div>
                         </div>
@@ -645,8 +583,7 @@
                     html += `<div class="divider"></div>`;
                     html += `
                         <div class="group-entry">
-                            <img src="${logos[8959084] || ""}">
-                            <div><strong>Psychiatry permanent blacklist</strong></div>
+                            <div><strong>Psychiatry Permanent Blacklist</strong></div>
                         </div>
                         <div style="margin-left: 50px;">
                             <div class="blacklist-section">
@@ -669,16 +606,16 @@
                             </div>
                             <div class="blacklist-row">
                                 <div class="blacklist-field">
-                                    <div><strong>Appealable</strong></div>
+                                    <div><strong>Appealable:</strong></div>
                                     <div>${psychiatryPermanentBlacklistEntry.appealable || "N/A"}</div>
                                 </div>
                                 <div class="blacklist-field">
-                                    <div><strong>When to appeal</strong></div>
+                                    <div><strong>When to appeal:</strong></div>
                                     <div>${psychiatryPermanentBlacklistEntry.whenToAppeal || "N/A"}</div>
                                 </div>
                             </div>
                             <div class="blacklist-section">
-                                <div><strong>Additional notes</strong></div>
+                                <div><strong>Additional notes:</strong></div>
                                 <div>${psychiatryPermanentBlacklistEntry.notes || "N/A"}</div>
                             </div>
                         </div>
@@ -733,13 +670,10 @@
 
             try {
                 const response = await fetch(proxyUrl("users", `/v1/users/${userId}`));
-
                 if (response.ok) {
                     const user = await response.json();
                     const username = user.name || user.displayName;
-                    if (username) {
-                        description = `SRL User Checker - ${username} | ${userId}`;
-                    }
+                    if (username) description = `SRL User Checker - ${username} | ${userId}`;
                 }
             } catch (err) {
                 console.error("Failed to fetch user details for metadata:", err);
@@ -752,17 +686,11 @@
 
             try {
                 const headshotRes = await fetch(
-                    proxyUrl(
-                        "thumbnails",
-                        "/v1/users/avatar-headshot",
-                        `userIds=${userId}&size=420x420&format=Png&isCircular=true`
-                    )
+                    proxyUrl("thumbnails", "/v1/users/avatar-headshot", `userIds=${userId}&size=420x420&format=Png&isCircular=true`)
                 );
-
                 if (headshotRes.ok) {
                     const headshotData = await headshotRes.json();
                     const headshotUrl = headshotData.data?.[0]?.imageUrl;
-
                     if (headshotUrl) {
                         selectors.image.forEach(selector => {
                             const tag = document.querySelector(selector);
@@ -794,7 +722,6 @@
         }
 
         window.addEventListener("load", () => {
-            setFavicon();
             setShareMetadataForUserPath();
             handleInitialPath();
         });
