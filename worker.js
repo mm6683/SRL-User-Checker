@@ -258,6 +258,93 @@ async function serveUsernameSharePage(request, env, username) {
   return serveUserSharePage(request, env, userId);
 }
 
+
+// ─── Server-side 3D avatar bundle ────────────────────────────────────────────
+// Fetches all 3D avatar assets (model JSON, OBJ, MTL, textures) server-side
+// and returns them as a single JSON bundle. This avoids all client-side CDN
+// auth issues — the Worker makes every Roblox request with proper credentials.
+//
+// CDN hash → tN subdomain XOR formula (same as client-side)
+function cdnHashUrl(hash) {
+  let i = 31;
+  const len = Math.min(38, hash.length);
+  for (let t = 0; t < len; t++) i ^= hash.charCodeAt(t);
+  return `https://t${i % 8}.rbxcdn.com/${hash}`;
+}
+
+async function fetchCdn(hash, apiKey) {
+  const url = cdnHashUrl(hash);
+  const headers = apiKey ? { "x-api-key": apiKey } : {};
+  const res = await fetch(url, { headers });
+  if (!res.ok) throw new Error(`CDN ${res.status} for ${hash} at ${url}`);
+  return res;
+}
+
+async function handleAvatarBundle(userId, env) {
+  const apiKey = env.RBX_SRL;
+
+  // 1. Fetch 3D thumbnail metadata (requires API key since March 2026).
+  const thumbRes = await fetch(
+    `https://thumbnails.roblox.com/v1/users/avatar-3d?userId=${userId}`,
+    { headers: { "x-api-key": apiKey } }
+  );
+  if (!thumbRes.ok) {
+    return Response.json({ error: `thumbnail API ${thumbRes.status}` }, { headers: CORS_HEADERS });
+  }
+  const thumbData = await thumbRes.json();
+  if (thumbData.state !== "Completed" || !thumbData.imageUrl) {
+    return Response.json({ error: "pending" }, { headers: CORS_HEADERS });
+  }
+
+  // 2. Fetch model JSON blob from the CDN URL in the thumbnail response.
+  const modelJsonRes = await fetch(thumbData.imageUrl, {
+    headers: apiKey ? { "x-api-key": apiKey } : {},
+  });
+  if (!modelJsonRes.ok) {
+    return Response.json({ error: `model JSON CDN ${modelJsonRes.status}` }, { headers: CORS_HEADERS });
+  }
+  const modelData = await modelJsonRes.json();
+
+  // 3. Fetch OBJ and MTL as text.
+  const [objRes, mtlRes] = await Promise.all([
+    fetchCdn(modelData.obj, apiKey),
+    fetchCdn(modelData.mtl, apiKey),
+  ]);
+  const [objText, mtlText] = await Promise.all([objRes.text(), mtlRes.text()]);
+
+  // 4. Fetch each texture as binary and base64-encode it.
+  // The texture hashes come from the model JSON's `textures` array.
+  // We also parse the MTL text to find any additional texture references
+  // (in case the MTL and the textures array differ).
+  const allHashes = new Set(modelData.textures || []);
+
+  // Extract bare hashes from MTL map_* lines (handles both bare hashes and
+  // prefixed names like "30DAY-hash" or full CDN URLs).
+  const hashPattern = /[a-f0-9]{32}/gi;
+  for (const match of mtlText.matchAll(hashPattern)) {
+    allHashes.add(match[0].toLowerCase());
+  }
+
+  const textures = {};
+  await Promise.all([...allHashes].map(async (hash) => {
+    try {
+      const res = await fetchCdn(hash, apiKey);
+      const buf = await res.arrayBuffer();
+      // Base64-encode for JSON transport.
+      textures[hash] = btoa(String.fromCharCode(...new Uint8Array(buf)));
+    } catch (err) {
+      console.warn(`Texture ${hash} failed:`, err.message);
+      // Include null so the client knows it was attempted.
+      textures[hash] = null;
+    }
+  }));
+
+  return Response.json(
+    { objText, mtlText, textures, camera: modelData.camera, aabb: modelData.aabb },
+    { headers: { "Content-Type": "application/json", ...CORS_HEADERS } }
+  );
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -271,7 +358,14 @@ export default {
       );
     }
 
-    // 3D avatar CDN proxy — must be checked before the generic /proxy/ handler
+    // Server-side 3D avatar bundle — fetches all model assets in one Worker
+    // request so the browser never needs to touch tN.rbxcdn.com directly.
+    const avatarBundleMatch = url.pathname.match(/^\/proxy\/avatar-bundle\/(\d+)$/);
+    if (avatarBundleMatch) {
+      return handleAvatarBundle(avatarBundleMatch[1], env);
+    }
+
+    // 3D avatar CDN proxy — kept as fallback for model JSON blob fetching
     if (url.pathname.startsWith("/proxy/rbxcdn/")) {
       return handleRbxCdnProxy(request, env);
     }
