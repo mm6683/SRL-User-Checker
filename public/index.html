@@ -166,7 +166,10 @@
             let i = 31;
             const len = Math.min(38, hash.length);
             for (let t = 0; t < len; t++) i ^= hash.charCodeAt(t);
-            return `/proxy/rbxcdn/${i % 8}/${hash}`;
+            // Must be absolute — Three.js MTLLoader resolves texture URLs relative
+            // to the MTL file's origin (t6.rbxcdn.com), so a bare /proxy/... path
+            // would produce https://proxy/... instead of https://our-worker.dev/...
+            return `${window.location.origin}/proxy/rbxcdn/${i % 8}/${hash}`;
         }
 
         // Passed to Three.js loaders so that texture hashes referenced inside the
