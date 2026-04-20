@@ -172,9 +172,20 @@
         // Passed to Three.js loaders so that texture hashes referenced inside the
         // MTL file are routed to the correct CDN server, not the same one the MTL
         // file itself came from.
+        // The pattern matches 32-char hex hashes but also allows uppercase (Roblox
+        // uses lowercase MD5s, but the CDN path may differ).
         function urlModifier(url) {
+            try {
+                const parsed = new URL(url, window.location.href);
+                const hostMatch = parsed.hostname.match(/^t(\d+)\.rbxcdn\.com$/);
+                if (hostMatch) {
+                    // Already a full CDN URL — re-route through our proxy.
+                    return `/proxy/rbxcdn/${hostMatch[1]}${parsed.pathname}`;
+                }
+            } catch { /* not a valid URL, fall through */ }
+            // Fallback: treat the last path segment as a hash.
             const hash = url.split("?")[0].split("/").pop();
-            if (/^[a-f0-9]{32}$/.test(hash)) return hashToCdnUrl(hash);
+            if (/^[a-f0-9]{32,}$/i.test(hash)) return hashToCdnUrl(hash);
             return url;
         }
 
@@ -222,13 +233,24 @@
                 }
 
                 // 2. The imageUrl is on a numbered CDN (e.g. https://t4.rbxcdn.com/HASH).
-                //    Extract server + hash and fetch through our proxy.
-                const cdnMatch = thumbData.imageUrl.match(/\/\/t(\d+)\.rbxcdn\.com\/([a-zA-Z0-9]+)/);
-                if (!cdnMatch) { await showFallbackAvatar(userId); return; }
+                //    Use URL parsing instead of regex so hyphens and other chars
+                //    in the path don't truncate the hash.
+                let cdnServer, cdnPath;
+                try {
+                    const cdnParsed = new URL(thumbData.imageUrl);
+                    const serverMatch = cdnParsed.hostname.match(/^t(\d+)\.rbxcdn\.com$/);
+                    if (!serverMatch) { await showFallbackAvatar(userId); return; }
+                    cdnServer = serverMatch[1];
+                    cdnPath = cdnParsed.pathname.slice(1); // strip leading /
+                } catch { await showFallbackAvatar(userId); return; }
 
-                const modelData = await fetch(
-                    `/proxy/rbxcdn/${cdnMatch[1]}/${cdnMatch[2]}`
-                ).then(r => r.json());
+                const modelJsonRes = await fetch(`/proxy/rbxcdn/${cdnServer}/${cdnPath}`);
+                if (!modelJsonRes.ok) {
+                    console.error("CDN model JSON fetch failed:", modelJsonRes.status);
+                    await showFallbackAvatar(userId);
+                    return;
+                }
+                const modelData = await modelJsonRes.json();
 
                 // 3. Three.js scene setup.
                 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
