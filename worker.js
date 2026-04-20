@@ -76,6 +76,13 @@ async function handleProxy(request, env) {
   outboundHeaders.delete("referer");
   outboundHeaders.delete("cookie");
 
+  // Since March 23 2026, Roblox requires Open Cloud authentication for all
+  // -3d thumbnail endpoints. Inject the API key (stored as a Worker secret
+  // via `wrangler secret put ROBLOX_API_KEY`) for all thumbnails requests.
+  if (service === "thumbnails" && env.RBX_SRL) {
+    outboundHeaders.set("x-api-key", env.RBX_SRL);
+  }
+
   const outboundInit = {
     method: request.method,
     headers: outboundHeaders,
