@@ -23,7 +23,7 @@ const ROBLOX_CDN_HOST = "tr.rbxcdn.com";
 // Proxy for numbered Roblox CDN subdomains (t0-t7.rbxcdn.com).
 // Used for 3D avatar assets: OBJ mesh, MTL material, and textures.
 // Route: /proxy/rbxcdn/{0-7}/{path...}  (path can contain hyphens, slashes, etc.)
-async function handleRbxCdnProxy(request) {
+async function handleRbxCdnProxy(request, env) {
   const url = new URL(request.url);
 
   if (request.method === "OPTIONS") {
@@ -37,11 +37,28 @@ async function handleRbxCdnProxy(request) {
     return new Response("Invalid CDN path", { status: 400, headers: CORS_HEADERS });
   }
 
-  const [, server, cdnPath] = match;
-  const targetUrl = `https://t${server}.rbxcdn.com/${cdnPath}`;
+  const [, , cdnPath] = match;
+
+  // Roblox MTL files reference textures with cache-busting prefixes like
+  // "30DAY-<hash>". The actual CDN path is just the trailing 32-char hex hash.
+  // Extract it and recompute the correct CDN server regardless of what the
+  // client sent — this makes the proxy self-correcting.
+  const hashMatch = cdnPath.match(/([a-f0-9]{32})$/i);
+  const actualHash = hashMatch ? hashMatch[1] : cdnPath;
+
+  // XOR formula to determine the correct tN.rbxcdn.com subdomain for a hash.
+  // Source: https://devforum.roblox.com/t/roblox-cdn-how-do-i-know-which-one-to-use/1274498
+  let xi = 31;
+  const xlen = Math.min(38, actualHash.length);
+  for (let t = 0; t < xlen; t++) xi ^= actualHash.charCodeAt(t);
+  const correctServer = xi % 8;
+
+  const targetUrl = `https://t${correctServer}.rbxcdn.com/${actualHash}`;
 
   try {
-    const response = await fetch(targetUrl, { redirect: "follow" });
+    const cdnHeaders = {};
+    if (env && env.RBX_SRL) cdnHeaders["x-api-key"] = env.RBX_SRL;
+    const response = await fetch(targetUrl, { headers: cdnHeaders, redirect: "follow" });
     const headers = new Headers(response.headers);
     Object.entries(CORS_HEADERS).forEach(([k, v]) => headers.set(k, v));
     return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
@@ -260,7 +277,7 @@ export default {
 
     // 3D avatar CDN proxy — must be checked before the generic /proxy/ handler
     if (url.pathname.startsWith("/proxy/rbxcdn/")) {
-      return handleRbxCdnProxy(request);
+      return handleRbxCdnProxy(request, env);
     }
 
     if (url.pathname.startsWith("/proxy/")) {
