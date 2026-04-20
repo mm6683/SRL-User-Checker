@@ -17,10 +17,37 @@ const DEFAULT_GROUP_ID = 564810012;
 const GROUP_ICON_SIZE = "420x420";
 const HEADSHOT_SIZE = "420x420";
 const FALLBACK_CARD_PATH = "/share-fallback.svg";
-const DEFAULT_FAVICON_DATA_URL =
-  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%231e1e1e'/%3E%3Ctext x='32' y='42' font-size='32' text-anchor='middle' fill='white' font-family='Arial'%3ESH%3C/text%3E%3C/svg%3E";
 const HOME_META_IMAGE_URL = "https://raw.githubusercontent.com/mm6683/SRL-User-Checker/refs/heads/main/public/logo.png";
 const ROBLOX_CDN_HOST = "tr.rbxcdn.com";
+
+// Proxy for numbered Roblox CDN subdomains (t0-t7.rbxcdn.com).
+// Used for 3D avatar assets: OBJ mesh, MTL material, and textures.
+// Route: /proxy/rbxcdn/{0-7}/{hash}
+async function handleRbxCdnProxy(request) {
+  const url = new URL(request.url);
+
+  if (request.method === "OPTIONS") {
+    return new Response(null, { headers: CORS_HEADERS });
+  }
+
+  const match = url.pathname.match(/^\/proxy\/rbxcdn\/([0-7])\/([a-zA-Z0-9]+)$/);
+  if (!match) {
+    return new Response("Invalid CDN path", { status: 400, headers: CORS_HEADERS });
+  }
+
+  const [, server, hash] = match;
+  const targetUrl = `https://t${server}.rbxcdn.com/${hash}`;
+
+  try {
+    const response = await fetch(targetUrl, { redirect: "follow" });
+    const headers = new Headers(response.headers);
+    Object.entries(CORS_HEADERS).forEach(([k, v]) => headers.set(k, v));
+    return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+  } catch (err) {
+    console.error("CDN proxy fetch failed:", err);
+    return new Response("CDN fetch failed", { status: 502, headers: CORS_HEADERS });
+  }
+}
 
 async function handleProxy(request, env) {
   const url = new URL(request.url);
@@ -39,9 +66,26 @@ async function handleProxy(request, env) {
   }
 
   const targetUrl = new URL(`/${rest.join("/")}${url.search}`, TARGETS[service]);
+
+  // Strip headers that cause Roblox to reject server-side requests with 403.
+  // The browser sends Origin/Referer pointing at the worker domain, which
+  // Roblox treats as an invalid origin on stricter endpoints (e.g. avatar-3d).
+  // Cookie is stripped to avoid accidentally forwarding session tokens.
+  const outboundHeaders = new Headers(request.headers);
+  outboundHeaders.delete("origin");
+  outboundHeaders.delete("referer");
+  outboundHeaders.delete("cookie");
+
+  // Since March 23 2026, Roblox requires Open Cloud authentication for all
+  // -3d thumbnail endpoints. Inject the API key (stored as a Worker secret
+  // via `wrangler secret put ROBLOX_API_KEY`) for all thumbnails requests.
+  if (service === "thumbnails" && env.RBX_SRL) {
+    outboundHeaders.set("x-api-key", env.RBX_SRL);
+  }
+
   const outboundInit = {
     method: request.method,
-    headers: request.headers,
+    headers: outboundHeaders,
     redirect: "follow",
   };
 
@@ -50,7 +94,6 @@ async function handleProxy(request, env) {
   }
 
   const outbound = new Request(targetUrl.toString(), outboundInit);
-
   const response = await fetch(outbound);
   const headers = new Headers(response.headers);
   Object.entries(CORS_HEADERS).forEach(([key, value]) => headers.set(key, value));
@@ -78,11 +121,7 @@ function getFallbackCardImage(request) {
 function proxyCdnUrl(rawUrl, request) {
   try {
     const parsed = new URL(rawUrl);
-
-    if (parsed.hostname !== ROBLOX_CDN_HOST) {
-      return rawUrl;
-    }
-
+    if (parsed.hostname !== ROBLOX_CDN_HOST) return rawUrl;
     return new URL(`/proxy/cdn${parsed.pathname}${parsed.search}`, request.url).toString();
   } catch {
     return rawUrl;
@@ -94,9 +133,7 @@ async function getGroupIconUrl(groupId, size = GROUP_ICON_SIZE) {
     const response = await fetch(
       `${TARGETS.thumbnails}/v1/groups/icons?groupIds=${groupId}&size=${size}&format=Png&isCircular=false`,
     );
-
     if (!response.ok) return undefined;
-
     const payload = await response.json();
     return payload?.data?.[0]?.imageUrl;
   } catch (err) {
@@ -110,9 +147,7 @@ async function getUserHeadshotUrl(userId, size = HEADSHOT_SIZE) {
     const response = await fetch(
       `${TARGETS.thumbnails}/v1/users/avatar-headshot?userIds=${userId}&size=${size}&format=Png&isCircular=true`,
     );
-
     if (!response.ok) return undefined;
-
     const payload = await response.json();
     return payload?.data?.[0]?.imageUrl;
   } catch (err) {
@@ -128,17 +163,11 @@ async function getUserIdFromUsername(username) {
 
     const response = await fetch(`${TARGETS.users}/v1/usernames/users`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        usernames: [cleanUsername],
-        excludeBannedUsers: false,
-      }),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ usernames: [cleanUsername], excludeBannedUsers: false }),
     });
 
     if (!response.ok) return undefined;
-
     const payload = await response.json();
     return payload?.data?.[0]?.id;
   } catch (err) {
@@ -150,10 +179,7 @@ async function getUserIdFromUsername(username) {
 async function serveUserSharePage(request, env, userId) {
   const baseResponse = await serveSPA(request, env);
   const contentType = baseResponse.headers.get("Content-Type") || "";
-
-  if (!contentType.includes("text/html")) {
-    return baseResponse;
-  }
+  if (!contentType.includes("text/html")) return baseResponse;
 
   let description = `SRL User Checker - User | ${userId}`;
   const rawGroupIconUrl = await getGroupIconUrl(DEFAULT_GROUP_ID);
@@ -162,124 +188,58 @@ async function serveUserSharePage(request, env, userId) {
 
   try {
     const userResponse = await fetch(`https://users.roblox.com/v1/users/${userId}`);
-
     if (userResponse.ok) {
       const user = await userResponse.json();
       const username = user.name || user.displayName;
-      if (username) {
-        description = `SRL User Checker - ${username} | ${userId}`;
-      }
+      if (username) description = `SRL User Checker - ${username} | ${userId}`;
     }
   } catch (err) {
     console.warn("Unable to fetch Roblox user for share card", err);
   }
 
   const headshotUrl = await getUserHeadshotUrl(userId);
-  if (headshotUrl) {
-    imageUrl = proxyCdnUrl(headshotUrl, request);
-  }
+  if (headshotUrl) imageUrl = proxyCdnUrl(headshotUrl, request);
 
   const html = await baseResponse.text();
   const replacements = [
-    {
-      pattern: /<meta\s+name="description"[^>]*content="[^"]*"/i,
-      replacement: `<meta name="description" content="${description}"`,
-    },
-    {
-      pattern: /<meta\s+property="og:description"[^>]*content="[^"]*"/i,
-      replacement: `<meta property="og:description" content="${description}"`,
-    },
-    {
-      pattern: /<meta\s+name="twitter:description"[^>]*content="[^"]*"/i,
-      replacement: `<meta name="twitter:description" content="${description}"`,
-    },
-    {
-      pattern: /<meta\s+property="og:image"[^>]*content="[^"]*"/i,
-      replacement: `<meta property="og:image" content="${imageUrl || ""}"`,
-    },
-    {
-      pattern: /<meta\s+property="og:image:width"[^>]*content="[^"]*"/i,
-      replacement: `<meta property="og:image:width" content="150"`,
-    },
-    {
-      pattern: /<meta\s+property="og:image:height"[^>]*content="[^"]*"/i,
-      replacement: `<meta property="og:image:height" content="150"`,
-    },
-    {
-      pattern: /<meta\s+name="twitter:image"[^>]*content="[^"]*"/i,
-      replacement: `<meta name="twitter:image" content="${imageUrl || ""}"`,
-    },
-    {
-      pattern: /<meta\s+name="twitter:card"[^>]*content="[^"]*"/i,
-      replacement: `<meta name="twitter:card" content="summary"`,
-    },
+    { pattern: /<meta\s+name="description"[^>]*content="[^"]*"/i, replacement: `<meta name="description" content="${description}"` },
+    { pattern: /<meta\s+property="og:description"[^>]*content="[^"]*"/i, replacement: `<meta property="og:description" content="${description}"` },
+    { pattern: /<meta\s+name="twitter:description"[^>]*content="[^"]*"/i, replacement: `<meta name="twitter:description" content="${description}"` },
+    { pattern: /<meta\s+property="og:image"[^>]*content="[^"]*"/i, replacement: `<meta property="og:image" content="${imageUrl || ""}"` },
+    { pattern: /<meta\s+property="og:image:width"[^>]*content="[^"]*"/i, replacement: `<meta property="og:image:width" content="150"` },
+    { pattern: /<meta\s+property="og:image:height"[^>]*content="[^"]*"/i, replacement: `<meta property="og:image:height" content="150"` },
+    { pattern: /<meta\s+name="twitter:image"[^>]*content="[^"]*"/i, replacement: `<meta name="twitter:image" content="${imageUrl || ""}"` },
+    { pattern: /<meta\s+name="twitter:card"[^>]*content="[^"]*"/i, replacement: `<meta name="twitter:card" content="summary"` },
   ];
 
-  const updatedHtml = replacements.reduce((output, { pattern, replacement }) => {
-    return output.replace(pattern, replacement);
-  }, html);
-
+  const updatedHtml = replacements.reduce((output, { pattern, replacement }) => output.replace(pattern, replacement), html);
   const headers = new Headers(baseResponse.headers);
-  return new Response(updatedHtml, {
-    status: baseResponse.status,
-    statusText: baseResponse.statusText,
-    headers,
-  });
+  return new Response(updatedHtml, { status: baseResponse.status, statusText: baseResponse.statusText, headers });
 }
 
 async function serveMainSharePage(request, env) {
   const baseResponse = await serveSPA(request, env);
   const contentType = baseResponse.headers.get("Content-Type") || "";
-
-  if (!contentType.includes("text/html")) {
-    return baseResponse;
-  }
+  if (!contentType.includes("text/html")) return baseResponse;
 
   const imageUrl = HOME_META_IMAGE_URL;
-
   const html = await baseResponse.text();
   const replacements = [
-    {
-      pattern: /<meta\s+property="og:image"[^>]*content="[^"]*"/i,
-      replacement: `<meta property="og:image" content="${imageUrl}"`,
-    },
-    {
-      pattern: /<meta\s+property="og:image:width"[^>]*content="[^"]*"/i,
-      replacement: `<meta property="og:image:width" content="150"`,
-    },
-    {
-      pattern: /<meta\s+property="og:image:height"[^>]*content="[^"]*"/i,
-      replacement: `<meta property="og:image:height" content="150"`,
-    },
-    {
-      pattern: /<meta\s+name="twitter:image"[^>]*content="[^"]*"/i,
-      replacement: `<meta name="twitter:image" content="${imageUrl}"`,
-    },
-    {
-      pattern: /<meta\s+name="twitter:card"[^>]*content="[^"]*"/i,
-      replacement: `<meta name="twitter:card" content="summary"`,
-    },
+    { pattern: /<meta\s+property="og:image"[^>]*content="[^"]*"/i, replacement: `<meta property="og:image" content="${imageUrl}"` },
+    { pattern: /<meta\s+property="og:image:width"[^>]*content="[^"]*"/i, replacement: `<meta property="og:image:width" content="150"` },
+    { pattern: /<meta\s+property="og:image:height"[^>]*content="[^"]*"/i, replacement: `<meta property="og:image:height" content="150"` },
+    { pattern: /<meta\s+name="twitter:image"[^>]*content="[^"]*"/i, replacement: `<meta name="twitter:image" content="${imageUrl}"` },
+    { pattern: /<meta\s+name="twitter:card"[^>]*content="[^"]*"/i, replacement: `<meta name="twitter:card" content="summary"` },
   ];
 
-  const updatedHtml = replacements.reduce((output, { pattern, replacement }) => {
-    return output.replace(pattern, replacement);
-  }, html);
-
+  const updatedHtml = replacements.reduce((output, { pattern, replacement }) => output.replace(pattern, replacement), html);
   const headers = new Headers(baseResponse.headers);
-  return new Response(updatedHtml, {
-    status: baseResponse.status,
-    statusText: baseResponse.statusText,
-    headers,
-  });
+  return new Response(updatedHtml, { status: baseResponse.status, statusText: baseResponse.statusText, headers });
 }
 
 async function serveUsernameSharePage(request, env, username) {
   const userId = await getUserIdFromUsername(username);
-
-  if (!userId) {
-    return serveMainSharePage(request, env);
-  }
-
+  if (!userId) return serveMainSharePage(request, env);
   return serveUserSharePage(request, env, userId);
 }
 
@@ -287,27 +247,24 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
+    // 3D avatar CDN proxy — must be checked before the generic /proxy/ handler
+    if (url.pathname.startsWith("/proxy/rbxcdn/")) {
+      return handleRbxCdnProxy(request);
+    }
+
     if (url.pathname.startsWith("/proxy/")) {
       return handleProxy(request, env);
     }
 
     if (url.pathname.startsWith("/username/")) {
       const match = url.pathname.match(/^\/username\/([^/]+)/);
-
-      if (match) {
-        return serveUsernameSharePage(request, env, decodeURIComponent(match[1]));
-      }
-
+      if (match) return serveUsernameSharePage(request, env, decodeURIComponent(match[1]));
       return serveMainSharePage(request, env);
     }
 
     if (url.pathname.startsWith("/userid/")) {
       const match = url.pathname.match(/^\/userid\/(\d+)/);
-
-      if (match) {
-        return serveUserSharePage(request, env, match[1]);
-      }
-
+      if (match) return serveUserSharePage(request, env, match[1]);
       return serveMainSharePage(request, env);
     }
 
