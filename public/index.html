@@ -175,19 +175,33 @@
         // the prefix is a cache-busting tag and the trailing 32-char hex string is
         // the actual CDN hash. We extract that hash and proxy accordingly.
         function urlModifier(url) {
+            // Helper: extract the trailing 32-char hex hash from any string that
+            // may have a prefix (e.g. "30DAY-93ee96..."). The CDN only knows the
+            // hash itself, not the prefixed filename the MTL references.
+            function extractHash(str) {
+                const m = str.match(/([a-f0-9]{32})$/i);
+                return m ? m[1] : null;
+            }
+
             try {
                 const parsed = new URL(url, window.location.href);
                 const hostMatch = parsed.hostname.match(/^t(\d+)\.rbxcdn\.com$/);
                 if (hostMatch) {
-                    // Already a full tN.rbxcdn.com URL — re-route through our proxy.
+                    // Full tN.rbxcdn.com URL. Strip any prefix from the path and
+                    // recompute the correct CDN server for this specific hash,
+                    // since different assets may live on different servers.
+                    const filename = parsed.pathname.split("/").pop();
+                    const hash = extractHash(filename);
+                    if (hash) return hashToCdnUrl(hash);
+                    // No hash found — pass the full path through as a last resort.
                     return `/proxy/rbxcdn/${hostMatch[1]}${parsed.pathname}`;
                 }
             } catch { /* not a valid absolute URL, fall through */ }
-            // Extract the trailing 32-char hex hash from the filename.
-            // Handles bare hashes ("abcd...") and prefixed names ("30DAY-abcd...").
+
+            // Relative URL or bare filename — extract trailing hash.
             const filename = url.split("?")[0].split("/").pop();
-            const hashMatch = filename.match(/([a-f0-9]{32})$/i);
-            if (hashMatch) return hashToCdnUrl(hashMatch[1]);
+            const hash = extractHash(filename);
+            if (hash) return hashToCdnUrl(hash);
             return url;
         }
 
