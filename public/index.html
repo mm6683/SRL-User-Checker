@@ -162,15 +162,19 @@
 
         // Compute t0-t7 CDN server for a hash and return a proxied URL.
         // Formula: https://devforum.roblox.com/t/roblox-cdn-how-do-i-know-which-one-to-use/1274498
-        function hashToCdnUrl(hash) {
+        // Compute the correct tN.rbxcdn.com server for a CDN path and return
+        // an absolute proxied URL. The path can be a bare hash (for OBJ/MTL) or
+        // a prefixed filename like "30DAY-<hash>" (for textures). The XOR formula
+        // must run on the full path as Roblox stores it — stripping any prefix
+        // gives the wrong server number and a 403.
+        function cdnPathToUrl(cdnPath) {
             let i = 31;
-            const len = Math.min(38, hash.length);
-            for (let t = 0; t < len; t++) i ^= hash.charCodeAt(t);
-            // Must be absolute — Three.js MTLLoader resolves texture URLs relative
-            // to the MTL file's origin (t6.rbxcdn.com), so a bare /proxy/... path
-            // would produce https://proxy/... instead of https://our-worker.dev/...
-            return `${window.location.origin}/proxy/rbxcdn/${i % 8}/${hash}`;
+            const len = Math.min(38, cdnPath.length);
+            for (let t = 0; t < len; t++) i ^= cdnPath.charCodeAt(t);
+            return `${window.location.origin}/proxy/rbxcdn/${i % 8}/${cdnPath}`;
         }
+        // Alias kept for OBJ/MTL calls which pass bare hashes.
+        const hashToCdnUrl = cdnPathToUrl;
 
         // Passed to Three.js loaders so that texture hashes referenced inside the
         // MTL file are routed to the correct CDN server.
@@ -178,33 +182,25 @@
         // the prefix is a cache-busting tag and the trailing 32-char hex string is
         // the actual CDN hash. We extract that hash and proxy accordingly.
         function urlModifier(url) {
-            // Helper: extract the trailing 32-char hex hash from any string that
-            // may have a prefix (e.g. "30DAY-93ee96..."). The CDN only knows the
-            // hash itself, not the prefixed filename the MTL references.
-            function extractHash(str) {
-                const m = str.match(/([a-f0-9]{32})$/i);
-                return m ? m[1] : null;
-            }
-
+            // The MTLLoader calls this for every texture URL it encounters.
+            // URLs come in two forms:
+            //   1. Full CDN URL: "https://t6.rbxcdn.com/30DAY-<hash>"
+            //   2. Bare filename: "30DAY-<hash>" (relative, resolved by Three.js)
+            // In both cases we must keep the FULL filename (prefix + hash) since
+            // the prefix is part of the actual CDN path. Stripping it gives the
+            // wrong XOR server and a 403.
             try {
                 const parsed = new URL(url, window.location.href);
-                const hostMatch = parsed.hostname.match(/^t(\d+)\.rbxcdn\.com$/);
-                if (hostMatch) {
-                    // Full tN.rbxcdn.com URL. Strip any prefix from the path and
-                    // recompute the correct CDN server for this specific hash,
-                    // since different assets may live on different servers.
-                    const filename = parsed.pathname.split("/").pop();
-                    const hash = extractHash(filename);
-                    if (hash) return hashToCdnUrl(hash);
-                    // No hash found — pass the full path through as a last resort.
-                    return `/proxy/rbxcdn/${hostMatch[1]}${parsed.pathname}`;
+                if (parsed.hostname.match(/^t\d+\.rbxcdn\.com$/)) {
+                    // Extract the full path segment (e.g. "30DAY-93ee96...")
+                    const cdnPath = parsed.pathname.slice(1); // strip leading /
+                    return cdnPathToUrl(cdnPath);
                 }
-            } catch { /* not a valid absolute URL, fall through */ }
+            } catch { /* not a valid absolute URL */ }
 
-            // Relative URL or bare filename — extract trailing hash.
-            const filename = url.split("?")[0].split("/").pop();
-            const hash = extractHash(filename);
-            if (hash) return hashToCdnUrl(hash);
+            // Bare filename or relative path — use as-is as the CDN path.
+            const cdnPath = url.split("?")[0].split("/").pop();
+            if (cdnPath) return cdnPathToUrl(cdnPath);
             return url;
         }
 
