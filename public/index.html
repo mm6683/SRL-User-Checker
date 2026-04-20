@@ -170,22 +170,24 @@
         }
 
         // Passed to Three.js loaders so that texture hashes referenced inside the
-        // MTL file are routed to the correct CDN server, not the same one the MTL
-        // file itself came from.
-        // The pattern matches 32-char hex hashes but also allows uppercase (Roblox
-        // uses lowercase MD5s, but the CDN path may differ).
+        // MTL file are routed to the correct CDN server.
+        // Roblox MTL files reference textures with names like "30DAY-<hash>" where
+        // the prefix is a cache-busting tag and the trailing 32-char hex string is
+        // the actual CDN hash. We extract that hash and proxy accordingly.
         function urlModifier(url) {
             try {
                 const parsed = new URL(url, window.location.href);
                 const hostMatch = parsed.hostname.match(/^t(\d+)\.rbxcdn\.com$/);
                 if (hostMatch) {
-                    // Already a full CDN URL — re-route through our proxy.
+                    // Already a full tN.rbxcdn.com URL — re-route through our proxy.
                     return `/proxy/rbxcdn/${hostMatch[1]}${parsed.pathname}`;
                 }
-            } catch { /* not a valid URL, fall through */ }
-            // Fallback: treat the last path segment as a hash.
-            const hash = url.split("?")[0].split("/").pop();
-            if (/^[a-f0-9]{32,}$/i.test(hash)) return hashToCdnUrl(hash);
+            } catch { /* not a valid absolute URL, fall through */ }
+            // Extract the trailing 32-char hex hash from the filename.
+            // Handles bare hashes ("abcd...") and prefixed names ("30DAY-abcd...").
+            const filename = url.split("?")[0].split("/").pop();
+            const hashMatch = filename.match(/([a-f0-9]{32})$/i);
+            if (hashMatch) return hashToCdnUrl(hashMatch[1]);
             return url;
         }
 
@@ -286,39 +288,55 @@
                     controls.update();
                 }
 
-                // 5. Load MTL then OBJ. Each file is on a different numbered CDN
-                //    server; urlModifier ensures textures are also routed correctly.
+                // 5. Fetch MTL as raw text, rewrite all texture references to
+                //    proxy URLs before Three.js ever sees them, then use parse()
+                //    instead of load(). This is more reliable than urlModifier
+                //    because Three.js resolves relative paths internally before
+                //    the modifier can intercept them, causing the full prefixed
+                //    filename (e.g. "30DAY-hash") to reach the CDN unchanged.
                 const mtlUrl = hashToCdnUrl(modelData.mtl);
                 const objUrl = hashToCdnUrl(modelData.obj);
 
-                const mtlLoader = new THREE.MTLLoader();
-                mtlLoader.manager.setURLModifier(urlModifier);
+                const mtlText = await fetch(mtlUrl).then(r => r.text());
 
-                mtlLoader.load(mtlUrl, (materials) => {
-                    materials.preload();
-
-                    // Roblox's exports include an alpha map that makes the mesh
-                    // transparent. Disable it so the avatar renders solid.
-                    for (const key in materials.materials) {
-                        materials.materials[key].transparent = false;
-                        materials.materials[key].side = THREE.FrontSide;
+                // Replace every map_ texture reference: both bare hashes and
+                // prefixed names like "30DAY-<hash>". We extract the trailing
+                // 32-char hex hash and rewrite it to the correct proxy URL.
+                const processedMtl = mtlText.replace(
+                    /^(\s*map_\w+(?:\s+-\w+\s+\S+)*\s+)(\S+)/gim,
+                    (match, directive, texRef) => {
+                        const hashMatch = texRef.match(/([a-f0-9]{32})$/i);
+                        if (hashMatch) return directive + hashToCdnUrl(hashMatch[1]);
+                        return match;
                     }
+                );
 
-                    const objLoader = new THREE.OBJLoader();
-                    objLoader.setMaterials(materials);
-                    objLoader.manager.setURLModifier(urlModifier);
+                const mtlLoader = new THREE.MTLLoader();
+                // parse() takes text + base path; empty base path means texture
+                // paths we wrote above are used as-is (they're already absolute).
+                const materials = mtlLoader.parse(processedMtl, '/');
+                materials.preload();
 
-                    objLoader.load(objUrl, (object) => {
-                        scene.add(object);
-                        if (loadingEl) loadingEl.style.display = "none";
+                // Roblox exports include an alpha map that makes the mesh
+                // transparent. Disable it so the avatar renders solid.
+                for (const key in materials.materials) {
+                    materials.materials[key].transparent = false;
+                    materials.materials[key].side = THREE.FrontSide;
+                }
 
-                        (function animate() {
-                            requestAnimationFrame(animate);
-                            if (controls) controls.update();
-                            else object.rotation.y += 0.01;
-                            renderer.render(scene, camera);
-                        })();
-                    });
+                const objLoader = new THREE.OBJLoader();
+                objLoader.setMaterials(materials);
+
+                objLoader.load(objUrl, (object) => {
+                    scene.add(object);
+                    if (loadingEl) loadingEl.style.display = "none";
+
+                    (function animate() {
+                        requestAnimationFrame(animate);
+                        if (controls) controls.update();
+                        else object.rotation.y += 0.01;
+                        renderer.render(scene, camera);
+                    })();
                 });
 
             } catch (err) {
