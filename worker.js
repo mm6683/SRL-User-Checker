@@ -247,6 +247,15 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
+    // Temporary debug route — visit /debug/auth-check to confirm the secret
+    // is wired up in the live worker. Remove once confirmed working.
+    if (url.pathname === "/debug/auth-check") {
+      return new Response(
+        JSON.stringify({ RBX_SRL_present: !!env.RBX_SRL, RBX_SRL_length: env.RBX_SRL?.length ?? 0 }),
+        { headers: { "Content-Type": "application/json", ...CORS_HEADERS } }
+      );
+    }
+
     // 3D avatar CDN proxy — must be checked before the generic /proxy/ handler
     if (url.pathname.startsWith("/proxy/rbxcdn/")) {
       return handleRbxCdnProxy(request);
