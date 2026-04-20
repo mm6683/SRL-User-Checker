@@ -150,62 +150,13 @@
 
         // ─── 3D Avatar viewer ─────────────────────────────────────────────────────
         //
-        // Roblox's /v1/users/avatar-3d endpoint returns a URL pointing to a JSON
-        // blob on a numbered CDN (t0-t7.rbxcdn.com). That blob contains camera
-        // data, an AABB for the avatar, and MD5 hashes for the OBJ mesh, MTL
-        // material, and texture files. Each hash maps to a specific CDN subdomain
-        // via a XOR formula. The existing /proxy/cdn route only covers tr.rbxcdn.com,
-        // so a separate /proxy/rbxcdn/{n}/{hash} route in worker.js handles these.
+        // Calls /proxy/avatar-bundle/{userId} which fetches all 3D avatar assets
+        // server-side (model JSON, OBJ, MTL, textures) and returns them bundled.
+        // The browser never contacts tN.rbxcdn.com directly.
 
         const AVATAR_W = 120;
         const AVATAR_H = 180;
 
-        // Compute t0-t7 CDN server for a hash and return a proxied URL.
-        // Formula: https://devforum.roblox.com/t/roblox-cdn-how-do-i-know-which-one-to-use/1274498
-        // Compute the correct tN.rbxcdn.com server for a CDN path and return
-        // an absolute proxied URL. The path can be a bare hash (for OBJ/MTL) or
-        // a prefixed filename like "30DAY-<hash>" (for textures). The XOR formula
-        // must run on the full path as Roblox stores it — stripping any prefix
-        // gives the wrong server number and a 403.
-        function cdnPathToUrl(cdnPath) {
-            let i = 31;
-            const len = Math.min(38, cdnPath.length);
-            for (let t = 0; t < len; t++) i ^= cdnPath.charCodeAt(t);
-            return `${window.location.origin}/proxy/rbxcdn/${i % 8}/${cdnPath}`;
-        }
-        // Alias kept for OBJ/MTL calls which pass bare hashes.
-        const hashToCdnUrl = cdnPathToUrl;
-
-        // Passed to Three.js loaders so that texture hashes referenced inside the
-        // MTL file are routed to the correct CDN server.
-        // Roblox MTL files reference textures with names like "30DAY-<hash>" where
-        // the prefix is a cache-busting tag and the trailing 32-char hex string is
-        // the actual CDN hash. We extract that hash and proxy accordingly.
-        function urlModifier(url) {
-            // The MTLLoader calls this for every texture URL it encounters.
-            // URLs come in two forms:
-            //   1. Full CDN URL: "https://t6.rbxcdn.com/30DAY-<hash>"
-            //   2. Bare filename: "30DAY-<hash>" (relative, resolved by Three.js)
-            // In both cases we must keep the FULL filename (prefix + hash) since
-            // the prefix is part of the actual CDN path. Stripping it gives the
-            // wrong XOR server and a 403.
-            try {
-                const parsed = new URL(url, window.location.href);
-                if (parsed.hostname.match(/^t\d+\.rbxcdn\.com$/)) {
-                    // Extract the full path segment (e.g. "30DAY-93ee96...")
-                    const cdnPath = parsed.pathname.slice(1); // strip leading /
-                    return cdnPathToUrl(cdnPath);
-                }
-            } catch { /* not a valid absolute URL */ }
-
-            // Bare filename or relative path — use as-is as the CDN path.
-            const cdnPath = url.split("?")[0].split("/").pop();
-            if (cdnPath) return cdnPathToUrl(cdnPath);
-            return url;
-        }
-
-        // Swap the canvas container for a plain 2D full-body PNG when the 3D
-        // thumbnail state is "Pending" or Three.js loaders are unavailable.
         async function showFallbackAvatar(userId) {
             const container = document.getElementById("avatar-3d-container");
             if (!container) return;
@@ -224,7 +175,6 @@
         }
 
         async function initAvatarViewer(userId) {
-            // Bail gracefully if any Three.js dependency failed to load.
             if (typeof THREE === "undefined" ||
                 typeof THREE.OBJLoader === "undefined" ||
                 typeof THREE.MTLLoader === "undefined") {
@@ -237,45 +187,55 @@
             if (!canvas) return;
 
             try {
-                // 1. Fetch 3D thumbnail metadata.
-                const thumbData = await fetch(
-                    proxyUrl("thumbnails", "/v1/users/avatar-3d", `userId=${userId}`)
-                ).then(r => r.json());
-
-                if (thumbData.state !== "Completed" || !thumbData.imageUrl) {
+                // 1. Fetch the entire model bundle from our Worker.
+                //    The Worker handles all Roblox CDN requests server-side.
+                const bundleRes = await fetch(`/proxy/avatar-bundle/${userId}`);
+                if (!bundleRes.ok) { await showFallbackAvatar(userId); return; }
+                const bundle = await bundleRes.json();
+                if (bundle.error) {
+                    console.warn("Avatar bundle error:", bundle.error);
                     await showFallbackAvatar(userId);
                     return;
                 }
 
-                // 2. The imageUrl is on a numbered CDN (e.g. https://t4.rbxcdn.com/HASH).
-                //    Use URL parsing instead of regex so hyphens and other chars
-                //    in the path don't truncate the hash.
-                let cdnServer, cdnPath;
-                try {
-                    const cdnParsed = new URL(thumbData.imageUrl);
-                    const serverMatch = cdnParsed.hostname.match(/^t(\d+)\.rbxcdn\.com$/);
-                    if (!serverMatch) { await showFallbackAvatar(userId); return; }
-                    cdnServer = serverMatch[1];
-                    cdnPath = cdnParsed.pathname.slice(1); // strip leading /
-                } catch { await showFallbackAvatar(userId); return; }
+                const { objText, mtlText, textures, camera: cam, aabb } = bundle;
 
-                const modelJsonRes = await fetch(`/proxy/rbxcdn/${cdnServer}/${cdnPath}`);
-                if (!modelJsonRes.ok) {
-                    console.error("CDN model JSON fetch failed:", modelJsonRes.status);
-                    await showFallbackAvatar(userId);
-                    return;
+                // 2. Build Blob URLs for OBJ, MTL, and each texture.
+                //    Patch the MTL text so every map_* line references our blob URLs
+                //    instead of CDN hashes or URLs.
+                const textureBlobs = {};
+                for (const [hash, b64] of Object.entries(textures)) {
+                    if (!b64) continue;
+                    try {
+                        const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+                        textureBlobs[hash] = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+                    } catch { /* skip bad texture */ }
                 }
-                const modelData = await modelJsonRes.json();
 
-                // 3. Three.js scene setup.
-                const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+                // Replace any hash-like token on map_* lines with the blob URL.
+                // Handles bare hashes and full CDN URLs (we extract just the hash part).
+                const patchedMtl = mtlText.replace(
+                    /(map_\w+\s+)(\S+)/g,
+                    (_, prefix, ref) => {
+                        const m = ref.match(/([a-f0-9]{32})/i);
+                        if (m && textureBlobs[m[1].toLowerCase()]) {
+                            return prefix + textureBlobs[m[1].toLowerCase()];
+                        }
+                        return prefix + ref;
+                    }
+                );
+
+                const mtlBlob = URL.createObjectURL(new Blob([patchedMtl], { type: "text/plain" }));
+                const objBlob = URL.createObjectURL(new Blob([objText], { type: "text/plain" }));
+
+                // 3. Set up Three.js scene.
+                const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
                 renderer.setSize(AVATAR_W, AVATAR_H);
                 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
                 const scene = new THREE.Scene();
                 scene.background = new THREE.Color(0x2a2a2a);
 
-                const { camera: cam, aabb } = modelData;
                 const cx = (aabb.min.x + aabb.max.x) / 2;
                 const cy = (aabb.min.y + aabb.max.y) / 2;
                 const cz = (aabb.min.z + aabb.max.z) / 2;
@@ -289,7 +249,6 @@
                 dirLight.position.set(5, 10, 7);
                 scene.add(dirLight);
 
-                // 4. OrbitControls: auto-rotates by default, user can drag to inspect.
                 let controls = null;
                 if (typeof THREE.OrbitControls !== "undefined") {
                     controls = new THREE.OrbitControls(camera, canvas);
@@ -301,55 +260,36 @@
                     controls.update();
                 }
 
-                // 5. Fetch MTL as raw text, rewrite all texture references to
-                //    proxy URLs before Three.js ever sees them, then use parse()
-                //    instead of load(). This is more reliable than urlModifier
-                //    because Three.js resolves relative paths internally before
-                //    the modifier can intercept them, causing the full prefixed
-                //    filename (e.g. "30DAY-hash") to reach the CDN unchanged.
-                const mtlUrl = hashToCdnUrl(modelData.mtl);
-                const objUrl = hashToCdnUrl(modelData.obj);
-
-                const mtlText = await fetch(mtlUrl).then(r => r.text());
-
-                // Replace every map_ texture reference: both bare hashes and
-                // prefixed names like "30DAY-<hash>". We extract the trailing
-                // 32-char hex hash and rewrite it to the correct proxy URL.
-                const processedMtl = mtlText.replace(
-                    /^(\s*map_\w+(?:\s+-\w+\s+\S+)*\s+)(\S+)/gim,
-                    (match, directive, texRef) => {
-                        const hashMatch = texRef.match(/([a-f0-9]{32})$/i);
-                        if (hashMatch) return directive + hashToCdnUrl(hashMatch[1]);
-                        return match;
-                    }
-                );
-
+                // 4. Load MTL then OBJ from blob URLs.
+                //    Since textures are already patched into the MTL as blob://
+                //    URLs, Three.js can load them directly — no URL modifier needed.
                 const mtlLoader = new THREE.MTLLoader();
-                // parse() takes text + base path; empty base path means texture
-                // paths we wrote above are used as-is (they're already absolute).
-                const materials = mtlLoader.parse(processedMtl, '/');
-                materials.preload();
+                mtlLoader.load(mtlBlob, (materials) => {
+                    materials.preload();
 
-                // Roblox exports include an alpha map that makes the mesh
-                // transparent. Disable it so the avatar renders solid.
-                for (const key in materials.materials) {
-                    materials.materials[key].transparent = false;
-                    materials.materials[key].side = THREE.FrontSide;
-                }
+                    for (const key in materials.materials) {
+                        materials.materials[key].transparent = false;
+                        materials.materials[key].side = THREE.FrontSide;
+                    }
 
-                const objLoader = new THREE.OBJLoader();
-                objLoader.setMaterials(materials);
+                    const objLoader = new THREE.OBJLoader();
+                    objLoader.setMaterials(materials);
+                    objLoader.load(objBlob, (object) => {
+                        scene.add(object);
+                        if (loadingEl) loadingEl.style.display = "none";
 
-                objLoader.load(objUrl, (object) => {
-                    scene.add(object);
-                    if (loadingEl) loadingEl.style.display = "none";
+                        // Revoke blob URLs now that Three.js has loaded them.
+                        URL.revokeObjectURL(mtlBlob);
+                        URL.revokeObjectURL(objBlob);
+                        Object.values(textureBlobs).forEach(u => URL.revokeObjectURL(u));
 
-                    (function animate() {
-                        requestAnimationFrame(animate);
-                        if (controls) controls.update();
-                        else object.rotation.y += 0.01;
-                        renderer.render(scene, camera);
-                    })();
+                        (function animate() {
+                            requestAnimationFrame(animate);
+                            if (controls) controls.update();
+                            else object.rotation.y += 0.01;
+                            renderer.render(scene, camera);
+                        })();
+                    });
                 });
 
             } catch (err) {
@@ -358,7 +298,7 @@
             }
         }
 
-        // ─── Roblox helpers ───────────────────────────────────────────────────────
+                // ─── Roblox helpers ───────────────────────────────────────────────────────
 
         async function getUserIDFromUsername(name) {
             try {
