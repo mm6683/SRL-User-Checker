@@ -39,21 +39,17 @@ async function handleRbxCdnProxy(request, env) {
 
   const [, , cdnPath] = match;
 
-  // Roblox MTL files reference textures with cache-busting prefixes like
-  // "30DAY-<hash>". The actual CDN path is just the trailing 32-char hex hash.
-  // Extract it and recompute the correct CDN server regardless of what the
-  // client sent — this makes the proxy self-correcting.
-  const hashMatch = cdnPath.match(/([a-f0-9]{32})$/i);
-  const actualHash = hashMatch ? hashMatch[1] : cdnPath;
-
-  // XOR formula to determine the correct tN.rbxcdn.com subdomain for a hash.
+  // XOR formula to determine the correct tN.rbxcdn.com subdomain.
   // Source: https://devforum.roblox.com/t/roblox-cdn-how-do-i-know-which-one-to-use/1274498
+  // IMPORTANT: the formula must run on the FULL CDN path as Roblox stores it,
+  // including any cache-busting prefix (e.g. "30DAY-<hash>"). Stripping the
+  // prefix before XOR gives the wrong server and a 403.
   let xi = 31;
-  const xlen = Math.min(38, actualHash.length);
-  for (let t = 0; t < xlen; t++) xi ^= actualHash.charCodeAt(t);
+  const xlen = Math.min(38, cdnPath.length);
+  for (let t = 0; t < xlen; t++) xi ^= cdnPath.charCodeAt(t);
   const correctServer = xi % 8;
 
-  const targetUrl = `https://t${correctServer}.rbxcdn.com/${actualHash}`;
+  const targetUrl = `https://t${correctServer}.rbxcdn.com/${cdnPath}`;
 
   try {
     const cdnHeaders = {};
