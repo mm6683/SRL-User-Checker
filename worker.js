@@ -22,7 +22,7 @@ const ROBLOX_CDN_HOST = "tr.rbxcdn.com";
 
 // Proxy for numbered Roblox CDN subdomains (t0-t7.rbxcdn.com).
 // Used for 3D avatar assets: OBJ mesh, MTL material, and textures.
-// Route: /proxy/rbxcdn/{0-7}/{hash}
+// Route: /proxy/rbxcdn/{0-7}/{path...}  (path can contain hyphens, slashes, etc.)
 async function handleRbxCdnProxy(request) {
   const url = new URL(request.url);
 
@@ -30,13 +30,15 @@ async function handleRbxCdnProxy(request) {
     return new Response(null, { headers: CORS_HEADERS });
   }
 
-  const match = url.pathname.match(/^\/proxy\/rbxcdn\/([0-7])\/([a-zA-Z0-9]+)$/);
+  // Strip the /proxy/rbxcdn/{n}/ prefix and treat the rest as the CDN path.
+  // Use a loose match so hyphens, underscores, and other chars are allowed.
+  const match = url.pathname.match(/^\/proxy\/rbxcdn\/([0-7])\/(.+)$/);
   if (!match) {
     return new Response("Invalid CDN path", { status: 400, headers: CORS_HEADERS });
   }
 
-  const [, server, hash] = match;
-  const targetUrl = `https://t${server}.rbxcdn.com/${hash}`;
+  const [, server, cdnPath] = match;
+  const targetUrl = `https://t${server}.rbxcdn.com/${cdnPath}`;
 
   try {
     const response = await fetch(targetUrl, { redirect: "follow" });
