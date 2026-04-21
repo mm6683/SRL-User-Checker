@@ -200,27 +200,28 @@
 
                 const { objText, mtlText, textures, camera: cam, aabb } = bundle;
 
-                // 2. Build Blob URLs for OBJ, MTL, and each texture.
-                //    Patch the MTL text so every map_* line references our blob URLs
-                //    instead of CDN hashes or URLs.
+                // 2. Build Blob URLs for each texture keyed by the FULL filename
+                //    (e.g. "30DAY-abc123...") as returned by the bundle.
+                //    The MTL patch replaces each map_* token with its blob URL.
                 const textureBlobs = {};
-                for (const [hash, b64] of Object.entries(textures)) {
+                for (const [name, b64] of Object.entries(textures)) {
                     if (!b64) continue;
                     try {
                         const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-                        textureBlobs[hash] = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+                        textureBlobs[name] = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
                     } catch { /* skip bad texture */ }
                 }
 
-                // Replace any hash-like token on map_* lines with the blob URL.
-                // Handles bare hashes and full CDN URLs (we extract just the hash part).
+                // Replace each map_* texture token with its blob URL.
+                // The token in the MTL is the full CDN filename, which is exactly
+                // the key in textureBlobs (e.g. "30DAY-abc123...").
                 const patchedMtl = mtlText.replace(
-                    /(map_\w+\s+)(\S+)/g,
+                    /^(map_\S+\s+)(\S+)/gim,
                     (_, prefix, ref) => {
+                        if (textureBlobs[ref]) return prefix + textureBlobs[ref];
+                        // Fallback: try bare 32-char hash extracted from ref.
                         const m = ref.match(/([a-f0-9]{32})/i);
-                        if (m && textureBlobs[m[1].toLowerCase()]) {
-                            return prefix + textureBlobs[m[1].toLowerCase()];
-                        }
+                        if (m && textureBlobs[m[1]]) return prefix + textureBlobs[m[1]];
                         return prefix + ref;
                     }
                 );
