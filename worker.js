@@ -312,29 +312,49 @@ async function handleAvatarBundle(userId, env) {
   ]);
   const [objText, mtlText] = await Promise.all([objRes.text(), mtlRes.text()]);
 
-  // 4. Fetch each texture as binary and base64-encode it.
-  // The texture hashes come from the model JSON's `textures` array.
-  // We also parse the MTL text to find any additional texture references
-  // (in case the MTL and the textures array differ).
-  const allHashes = new Set(modelData.textures || []);
+  // 4. Parse MTL to find the FULL texture filenames as they appear on the CDN.
+  // Roblox MTL files reference textures as "30DAY-<hash>" — the full string
+  // including the prefix is the real CDN path. Fetching just the bare hash
+  // gives 403 because that file doesn't exist.
+  //
+  // We collect full filenames from:
+  //   a) map_* lines in the MTL text (the ground truth)
+  //   b) modelData.textures bare hashes as a fallback (fetched bare if needed)
+  //
+  // Key: full CDN filename (e.g. "30DAY-abc123...") → base64 PNG
+  const textures = {};
 
-  // Extract bare hashes from MTL map_* lines (handles both bare hashes and
-  // prefixed names like "30DAY-hash" or full CDN URLs).
-  const hashPattern = /[a-f0-9]{32}/gi;
-  for (const match of mtlText.matchAll(hashPattern)) {
-    allHashes.add(match[0].toLowerCase());
+  // Parse every map_* line and collect the full texture filename token.
+  const mtlTextureNames = new Set();
+  for (const line of mtlText.split("\n")) {
+    const m = line.trim().match(/^map_\S+\s+(\S+)/i);
+    if (m) mtlTextureNames.add(m[1]);
   }
 
-  const textures = {};
-  await Promise.all([...allHashes].map(async (hash) => {
+  // Also collect bare hashes from modelData.textures as a fallback.
+  const fallbackHashes = new Set(modelData.textures || []);
+
+  // Fetch MTL-referenced textures using their full filename (correct CDN path).
+  await Promise.all([...mtlTextureNames].map(async (name) => {
+    try {
+      const res = await fetchCdn(name, apiKey);
+      const buf = await res.arrayBuffer();
+      textures[name] = btoa(String.fromCharCode(...new Uint8Array(buf)));
+    } catch (err) {
+      console.warn(`Texture "${name}" failed:`, err.message);
+      textures[name] = null;
+    }
+  }));
+
+  // For any bare hashes from modelData.textures not already covered, try them too.
+  await Promise.all([...fallbackHashes].map(async (hash) => {
+    if (textures[hash] !== undefined) return; // already fetched via MTL
     try {
       const res = await fetchCdn(hash, apiKey);
       const buf = await res.arrayBuffer();
-      // Base64-encode for JSON transport.
       textures[hash] = btoa(String.fromCharCode(...new Uint8Array(buf)));
     } catch (err) {
-      console.warn(`Texture ${hash} failed:`, err.message);
-      // Include null so the client knows it was attempted.
+      console.warn(`Texture hash "${hash}" fallback failed:`, err.message);
       textures[hash] = null;
     }
   }));
